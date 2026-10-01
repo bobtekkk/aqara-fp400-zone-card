@@ -1,0 +1,5 @@
+{
+  "name": "Aqara FP400 Zone Card (Zigbee2MQTT)",
+  "filename": "fp400-zone-card.js",
+  "render_readme": true
+}

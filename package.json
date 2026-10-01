@@ -1,0 +1,17 @@
+{
+  "name": "aqara-fp400-zone-card",
+  "version": "0.1.0",
+  "description": "Presence zones and interference blocks for the Aqara FP400 on Zigbee2MQTT, with a Home Assistant dashboard card",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "e2e": "node test/card.e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.49.0",
+    "zigbee-herdsman": "10.9.2",
+    "zigbee-herdsman-converters": "26.105.0"
+  }
+}
