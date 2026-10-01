@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import definition, {worldToGrid} from '../z2m/aqara-fp400.mjs';
+import definition, {worldToGrid, fp400Poll} from '../z2m/aqara-fp400.mjs';
 import {rectBits, clampBlock} from '../dist/fp400-zone-card.js';
 
 const gridBits = g => {const bits = []; for (let r = g.row_start; r <= g.row_end; r++) for (let c = g.column_start; c <= g.column_end; c++) bits.push(r * 16 + c); return bits;};
@@ -50,8 +50,30 @@ test('region reports decode cell counts and the interference mask', () => {
     assert.equal(state.monitoring_region, '310 cells selected');
     assert.equal(state.interference_mask_hex, mask.toString('hex'));
 });
+test('entry/exit and outside-room areas edit their own masks', async () => {
+    const masks = {18: Buffer.alloc(40), 19: Buffer.alloc(40), 20: Buffer.alloc(40)};
+    const endpoint = {read: async (cluster, [id]) => ({[id]: Buffer.from(masks[id])}), write: async (cluster, payload) => {const [id] = Object.keys(payload); masks[id] = Buffer.from(payload[id].value);}};
+    const meta = {device: {ieeeAddr: 'area-test', getEndpoint: () => endpoint}};
+    const rect = {x_min: 300, x_max: 400, y_min: 0, y_max: 50};
+    const entry = await control('entry_exit_zone_add').convertSet(null, 'entry_exit_zone_add', JSON.stringify(rect), meta);
+    assert.equal(masks[18][0], 0xc0); assert.equal(masks[19][0], 0); assert.equal(entry.state.entry_exit_mask_hex.slice(0, 2), 'c0');
+    const edge = await control('edge_zone_add').convertSet(null, 'edge_zone_add', rect, meta);
+    assert.equal(masks[20][0], 0xc0); assert.equal(edge.state.edge_mask_hex.slice(0, 2), 'c0'); assert.equal(edge.state.monitoring_region, '318 cells selected');
+    await control('edge_zone_remove').convertSet(null, 'edge_zone_remove', rect, meta); assert.equal(masks[20][0], 0);
+    await control('entry_exit_clear').convertSet(null, 'entry_exit_clear', 'confirm', meta); assert.ok(masks[18].every(b => b === 0));
+    await assert.rejects(() => control('edge_clear').convertSet(null, 'edge_clear', 'yes', meta), /confirm/);
+});
 test('clear accepts a sensor that reports an empty mask as zero-length', async () => {
     const endpoint = {write: async () => {}, read: async () => ({19: Buffer.alloc(0)})};
     const result = await control('interference_clear').convertSet(null, 'interference_clear', 'confirm', {device: {ieeeAddr: 'clear-test', getEndpoint: () => endpoint}});
     assert.equal(result.state.interference_mask_hex, '0'.repeat(80));
+});
+test('area masks are read at start and then every 5 minutes, not on every poll', async () => {
+    const reads = [], commands = [];
+    const device = {ieeeAddr: 'poll-test', meta: {}, getEndpoint: () => ({read: async (cluster, [id]) => {reads.push(id); return {};}, command: async (...args) => {commands.push(args[1]); return {statusCode: 0};}})};
+    await fp400Poll(device); await fp400Poll(device);
+    assert.deepEqual(reads, [18, 19, 20]); assert.deepEqual(commands, [], 'no zones, no tracking subscription');
+    device.meta.fp400SoftwareZones = {1: {name: 'Desk'}};
+    await fp400Poll(device);
+    assert.deepEqual(commands, ['subscribeLocationData']); assert.equal(reads.length, 3);
 });

@@ -231,7 +231,7 @@ function decodeInstallation(data) {
         if (data[id] === undefined) continue;
         try {
             state[key] = regionState(key, data[id]);
-            if (key === 'interference_region') state.interference_mask_hex = regionBuffer(data[id]).toString('hex');
+            state[`${areaOf(id)}_mask_hex`] = regionBuffer(data[id]).toString('hex');
         } catch { /* preserve last valid region */ }
     }
     return state;
@@ -259,8 +259,29 @@ const fp400InstallationControl = {
         return {state: decodeInstallation(data)};
     },
 };
-// Edit rectangles while preserving every cell outside the selected rectangle.
-// Grid indices deliberately avoid claiming unverified Zigbee distances or left/right axes.
+// Read-modify-write of one region mask under the device lock, confirmed by reading it back.
+async function writeRegion(device, id, change) {
+    const endpoint = device.getEndpoint(1);
+    return withDeviceLock(device, async () => {
+        const current = await endpoint.read(configCluster, [id], manufacturerOptions);
+        const mask = change(Buffer.from(regionBuffer(current[id])));
+        await endpoint.write(configCluster, {[id]: {value: mask, type: 0x41}}, manufacturerOptions);
+        const readback = await endpoint.read(configCluster, [id], manufacturerOptions);
+        if (!regionBuffer(readback[id]).equals(mask)) throw new Error('Region write was not confirmed by the sensor');
+        const state = decodeInstallation(readback);
+        if (id === regionAttributes.monitoring_region) state.detection_depth = decodeDepth(readback[id]);
+        return {state};
+    });
+}
+function setCells(mask, {row_start, row_end, column_start, column_end}, on) {
+    for (let row = row_start; row <= row_end; row++) for (let col = column_start; col <= column_end; col++) {
+        const bit = row * 16 + col, flag = 0x80 >> (bit % 8);
+        if (on) mask[bit >> 3] |= flag;
+        else mask[bit >> 3] &= ~flag;
+    }
+    return mask;
+}
+// Raw grid editor. A set bit in the monitoring region excludes that cell, so "add" clears it there.
 const fp400RegionControl = {
     key: Object.keys(regionAttributes).map(key => `${key}_edit`),
     convertSet: async (entity, key, value, meta) => {
@@ -272,53 +293,31 @@ const fp400RegionControl = {
         if (![r0, r1, c0, c1].every(Number.isInteger) || r0 < 0 || r1 > 19 || c0 < 0 || c1 > 15 || r0 > r1 || c0 > c1) {
             throw new Error('Rows must be 0..19, columns 0..15, with start not greater than end');
         }
-        const endpoint = meta.device.getEndpoint(1);
-        const id = regionAttributes[region];
-        return withDeviceLock(meta.device, async () => {
-            const current = await endpoint.read(configCluster, [id], manufacturerOptions);
-            const mask = Buffer.from(regionBuffer(current[id]));
-            const selected = value.operation === 'add';
-            const setBit = region === 'monitoring_region' ? !selected : selected;
-            for (let row = r0; row <= r1; row++) for (let col = c0; col <= c1; col++) {
-                const bit = row * 16 + col, flag = 0x80 >> (bit % 8);
-                if (setBit) mask[bit >> 3] |= flag;
-                else mask[bit >> 3] &= ~flag;
-            }
-            await endpoint.write(configCluster, {[id]: {value: mask, type: 0x41}}, manufacturerOptions);
-            const readback = await endpoint.read(configCluster, [id], manufacturerOptions);
-            if (!regionBuffer(readback[id]).equals(mask)) throw new Error('Region write was not confirmed by the sensor');
-            const state = decodeInstallation(readback);
-            if (id === 20) state.detection_depth = decodeDepth(readback[id]);
-            return {state};
-        });
+        const selected = value.operation === 'add';
+        return writeRegion(meta.device, regionAttributes[region],
+            mask => setCells(mask, {row_start: r0, row_end: r1, column_start: c0, column_end: c1}, region === 'monitoring_region' ? !selected : selected));
     },
 };
+// World-coordinate (cm) editors for the three native area masks. A set bit marks the cell:
+// interference = ignore movement there, entry_exit = doorway, edge = outside the room (not monitored).
+const areaRegions = {interference: regionAttributes.interference_region, entry_exit: regionAttributes.entry_exit_region, edge: regionAttributes.monitoring_region};
+function areaOf(id) {return Object.keys(areaRegions).find(area => areaRegions[area] === id);}
 const fp400RegionGet = {
-    key: [...Object.keys(regionAttributes), 'interference_mask_hex'],
+    key: [...Object.keys(regionAttributes), ...Object.keys(areaRegions).map(area => `${area}_mask_hex`)],
     convertGet: async (entity, key, meta) => {
-        await meta.device.getEndpoint(1).read(configCluster, [regionAttributes[key] ?? regionAttributes.interference_region], manufacturerOptions);
+        await meta.device.getEndpoint(1).read(configCluster, [regionAttributes[key] ?? areaRegions[key.replace(/_mask_hex$/, '')]], manufacturerOptions);
     },
 };
-// World-coordinate rectangles for the interference mask. Cells are converted to
-// the 20 × 16 native grid and merged into the existing mask.
-const fp400InterferenceZone = {
-    key: ['interference_zone_add', 'interference_zone_remove', 'interference_clear'],
+const fp400AreaControl = {
+    key: Object.keys(areaRegions).flatMap(area => [`${area}_zone_add`, `${area}_zone_remove`, `${area}_clear`]),
     convertSet: async (entity, key, value, meta) => {
-        if (key === 'interference_clear') {
-            if (value !== 'confirm') throw new Error("Send 'confirm' to clear all interference cells");
-            const endpoint = meta.device.getEndpoint(1);
-            const mask = Buffer.alloc(40);
-            const readback = await withDeviceLock(meta.device, async () => {
-                await endpoint.write(configCluster, {19: {value: mask, type: 0x41}}, manufacturerOptions);
-                return endpoint.read(configCluster, [19], manufacturerOptions);
-            });
-            if (!regionBuffer(readback[19]).equals(mask)) throw new Error('Clear was not confirmed by the sensor');
-            return {state: decodeInstallation(readback)};
+        const area = Object.keys(areaRegions).find(name => key.startsWith(`${name}_`));
+        if (key === `${area}_clear`) {
+            if (value !== 'confirm') throw new Error(`Send 'confirm' to clear every ${area} cell`);
+            return writeRegion(meta.device, areaRegions[area], () => Buffer.alloc(40));
         }
-        if (typeof value === 'string') value = JSON.parse(value);
-        const rectangle = worldToGrid(value);
-        return fp400RegionControl.convertSet(entity, 'interference_region_edit',
-            {operation: key.endsWith('_add') ? 'add' : 'remove', ...rectangle}, meta);
+        const rectangle = worldToGrid(typeof value === 'string' ? JSON.parse(value) : value);
+        return writeRegion(meta.device, areaRegions[area], mask => setCells(mask, rectangle, key.endsWith('_add')));
     },
 };
 async function refreshFp400Configuration(endpoint) {
@@ -362,14 +361,19 @@ const fp400AdditionalExposes = [
     e.text('learning_started_time', ea.STATE).withCategory('diagnostic').withDescription('UTC time of the last learning command accepted during this converter installation'),
     e.text('learning_result_time', ea.STATE).withCategory('diagnostic').withDescription('UTC time of the last received learning result event'),
     e.enum('refresh_configuration', ea.SET, ['refresh']).withCategory('config').withDescription('Read mounting, AI, regions and native zone configuration from the sensor'),
-    e.text('interference_zone_add', ea.SET).withCategory('config')
-        .withDescription('Mark an interference rectangle in world coordinates (cm), e.g. {"x_min":-100,"x_max":100,"y_min":50,"y_max":250}. Cells are added to the existing mask.'),
-    e.text('interference_zone_remove', ea.SET).withCategory('config')
-        .withDescription('Clear the interference cells inside a world-coordinate rectangle. Same JSON shape as interference_zone_add.'),
-    e.text('interference_clear', ea.SET).withCategory('config')
-        .withDescription("Clear every interference cell. Send 'confirm' to apply."),
-    e.text('interference_mask_hex', ea.STATE_GET).withCategory('diagnostic')
-        .withDescription('Raw interference mask, 80 hex characters (40 bytes, 320 cells). Used by the room-zones card to show blocked cells.'),
+    ...Object.entries({
+        interference: 'Interference area: the sensor ignores movement in these cells (fan, curtain, TV).',
+        entry_exit: 'Entry/exit area: doorways, where the sensor creates and drops targets faster.',
+        edge: 'Outside the room: the sensor does not monitor these cells (behind a wall, a window, the next room).',
+    }).flatMap(([area, purpose]) => [
+        e.text(`${area}_zone_add`, ea.SET).withCategory('config')
+            .withDescription(`${purpose} Adds a rectangle in centimetres, e.g. {"x_min":-100,"x_max":100,"y_min":50,"y_max":250}.`),
+        e.text(`${area}_zone_remove`, ea.SET).withCategory('config')
+            .withDescription(`${purpose} Removes the cells inside a rectangle (same JSON).`),
+        e.text(`${area}_clear`, ea.SET).withCategory('config').withDescription(`${purpose} Send 'confirm' to clear every cell.`),
+        e.text(`${area}_mask_hex`, ea.STATE_GET).withCategory('diagnostic')
+            .withDescription('Raw cell mask, 80 hex characters (20 rows × 16 columns). Used by the zone card to draw the cells.'),
+    ]),
     ...Object.keys(regionAttributes).flatMap(key => [
         e.text(key, ea.STATE_GET).withCategory('diagnostic').withDescription('Number of selected grid cells. Monitoring cells are included; interference cells are marked as interference sources. Use the rectangle editor to change a region. Geometry is experimental.'),
         e.composite(`${key}_edit`, `${key}_edit`, ea.SET).withCategory('config')
@@ -468,8 +472,8 @@ const fp400ZoneExposes = [
     e.numeric('maximum_detection_targets', ea.STATE_GET).withCategory('diagnostic')
         .withDescription('Device-reported tracking capacity; not the current people count'),
 ];
-// Observed Zigbee FC0C event 0, not the different Matter target schema.
-// Unknown/truncated packets never become an empty target list.
+// FC0C event 0: the target list. Records follow the Matter LocationInfo order: id, x, y, cell (row << 8 | col),
+// activity (1 moving, 2 still), fall, posture, zone id, in-zone id. Unknown/truncated packets never become an empty list.
 export function decodeTrackingFrame(data) {
     if (!Buffer.isBuffer(data) || data.length < 7 || ![0x0c, 0x1c].includes(data[0]) ||
         data.readUInt16LE(1) !== 0x115f || data[4] !== 0x8b || data.readUInt16LE(5) !== 0) return undefined;
@@ -482,8 +486,8 @@ export function decodeTrackingFrame(data) {
         const r = data.subarray(10 + index * 25, 35 + index * 25);
         if (tags.some(([offset, tag]) => r[offset] !== tag) || ids.has(r[3])) throw new Error('Invalid tracking record');
         ids.add(r[3]);
-        targets.push({id:r[3], x:r.readInt16LE(5), y:r.readInt16LE(8), v3:r.readInt16LE(11), v4:r.readInt16LE(14),
-            v5:r.readUInt16LE(17), s1:r[20], s2:r[22], s3:r[24]});
+        targets.push({id:r[3], x:r.readInt16LE(5), y:r.readInt16LE(8), cell:r.readInt16LE(11), activity:r.readInt16LE(14),
+            fall:r.readUInt16LE(17), posture:r[20], zone:r[22], in_zone:r[24]});
     }
     return targets;
 }
@@ -504,17 +508,27 @@ export function parseSoftwareZone(value) {
     return zone;
 }
 export class SoftwareZoneTracker {
-    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.awaiting=new Set();this.invalid=false;}
+    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.awaiting=new Set();this.invalid=false;}
+    // Returns the targets that entered or left each zone with this frame.
     accept(targets, now) {
-        this.lastAt=now;this.invalid=false;this.awaiting.clear();
+        this.lastAt=now;this.invalid=false;
+        const events=[];
         for (const [id,z] of Object.entries(this.zones)) {
-            const inside=targets.some(t=>t.x>=z.x_min && t.x<z.x_max && t.y>=z.y_min && t.y<z.y_max);
-            if (inside) {this.occupied[id]=true;delete this.outsideSince[id];}
+            const inZone=targets.filter(t=>t.x>=z.x_min && t.x<z.x_max && t.y>=z.y_min && t.y<z.y_max);
+            if (inZone.length) {this.occupied[id]=true;delete this.outsideSince[id];}
             else if (this.outsideSince[id]===undefined) this.outsideSince[id]=now;
+            const ids=new Set(inZone.map(t=>t.id)), before=this.inside[id];
+            if (before && !this.awaiting.has(Number(id))) {
+                for (const t of ids) if (!before.ids.has(t)) events.push({zone:Number(id),type:'enter'});
+                for (const t of before.ids) if (!ids.has(t)) events.push({zone:Number(id),type:'leave'});
+            }
+            this.inside[id]={ids,moving:inZone.some(t=>t.activity===1)};
         }
+        this.awaiting.clear();
+        return events;
     }
     // An edited zone waits for a fresh frame: positions from before the edit must not confirm it.
-    reset(id) {delete this.outsideSince[id];delete this.occupied[id];this.awaiting.add(Number(id));}
+    reset(id) {delete this.outsideSince[id];delete this.occupied[id];delete this.inside[id];this.awaiting.add(Number(id));}
     state(now) {
         const fresh=this.lastAt!==null && now-this.lastAt<30000;
         const usable=fresh && !this.invalid;
@@ -525,6 +539,9 @@ export class SoftwareZoneTracker {
             result[`${prefix}_config`]=z?JSON.stringify(z):'clear';
             result[`${prefix}_available`]=Boolean(z && live);
             result[`${prefix}_occupancy`]=z && live ? Boolean(this.occupied[id]) : null;
+            const count=this.inside[id]?.ids.size ?? 0;
+            result[`${prefix}_count`]=z && live ? count : null;
+            result[`${prefix}_activity`]=z && live && count ? (this.inside[id].moving ? 'moving' : 'still') : null;
         }
         return result;
     }
@@ -547,6 +564,17 @@ function softwareContext(device, publish) {
 // Tracker state for a converter to return; recorded so the timer does not publish it a second time.
 function zoneState(context) {
     const state=context.tracker.state(Date.now());context.lastState=JSON.stringify(state);return state;
+}
+// Every 10 s: keep the position stream alive while zones exist. The sensor never reports its area masks on its own,
+// so read them at start and every 5 minutes; the card then also shows changes made elsewhere (e.g. AI recognition).
+const regionsReadAt=new Map();
+export async function fp400Poll(device) {
+    if (Object.keys(device.meta.fp400SoftwareZones ?? {}).length) await subscribeTracking(device);
+    if (Date.now()-(regionsReadAt.get(device.ieeeAddr) ?? 0) < 300000) return;
+    await withDeviceLock(device, async () => {
+        for (const id of Object.values(regionAttributes)) await device.getEndpoint(1).read(configCluster, [id], manufacturerOptions);
+    });
+    regionsReadAt.set(device.ieeeAddr, Date.now());
 }
 async function subscribeTracking(device, seconds=120) {
     const result=await device.getEndpoint(1).command('aqaraFp400Location','subscribeLocationData',{timeout:seconds},
@@ -583,7 +611,9 @@ const softwareZoneExposes=Array.from({length:8},(_,i)=>{
     const key=`software_zone_${i+1}`;
     return [e.text(`${key}_config`,ea.ALL).withCategory('config').withDescription('Software rectangle JSON: name, x_min/x_max/y_min/y_max in observed coordinate units (approximately cm), absence_timeout in seconds; clear removes it'),
         e.binary(`${key}_occupancy`,ea.STATE,true,false).withDescription('Presence inside this software zone; unknown when positions are stale or incomplete'),
-        e.binary(`${key}_available`,ea.STATE,true,false).withCategory('diagnostic').withDescription('Zone is configured and complete position data is fresh')];
+        e.binary(`${key}_available`,ea.STATE,true,false).withCategory('diagnostic').withDescription('Zone is configured and complete position data is fresh'),
+        e.numeric(`${key}_count`,ea.STATE).withDescription('People in this software zone right now; unknown when positions are stale'),
+        e.enum(`${key}_activity`,ea.STATE,['moving','still']).withDescription('Moving if anyone in this software zone is moving, still if everyone is still; unknown when the zone is empty')];
 }).flat();
 
 const fp400Tracking = {
@@ -594,7 +624,9 @@ const fp400Tracking = {
             const targets = decodeTrackingFrame(msg.data);
             if (!targets) return;
             const context=softwareContext(msg.device,publish);
-            context.tracker.accept(targets,Date.now());
+            const events=context.tracker.accept(targets,Date.now());
+            // After this frame's state is published, so automations see the new counts.
+            if (events.length) setImmediate(() => {for (const ev of events) publish?.({action:`software_zone_${ev.zone}_${ev.type}`});});
             return {...zoneState(context), tracking_last_frame:msg.data.toString('hex').slice(0, 240),
                 tracking_last_update:new Date().toISOString(), target_count:targets.length,
                 targets_xy:targets.map(t => `${t.id}:${t.x}:${t.y}`).join(';') || 'none',
@@ -605,7 +637,43 @@ const fp400Tracking = {
         }
     },
 };
+// FC0B event 0: whole-room movement, one enum8 in the Matter MotionDetected order.
+const motionEvents = ['enter', 'leave', 'left_in', 'right_out', 'right_in', 'left_out', 'approach', 'away'];
+export function decodeMotionEvent(data) {
+    if (!Buffer.isBuffer(data) || data.length < 8 || ![0x0c, 0x1c].includes(data[0]) ||
+        data.readUInt16LE(1) !== 0x115f || data[4] !== 0x8b || data.readUInt16LE(5) !== 0) return undefined;
+    // Accept the value with or without a ZCL type tag (enum8 0x30 / uint8 0x20) in front of it.
+    const value = data.length >= 9 && [0x30, 0x20].includes(data[7]) ? data[8] : data[7];
+    return motionEvents[value];
+}
+const fp400Motion = {
+    cluster: 'aqaraFp400Radar', type: ['raw'],
+    convert: (model, msg) => {
+        if (!Buffer.isBuffer(msg.data) || msg.data[4] !== 0x8b) return;
+        const action = decodeMotionEvent(msg.data);
+        return {motion_last_frame: msg.data.toString('hex').slice(0, 80), ...(action && msg.endpoint.ID === 1 ? {action} : {})};
+    },
+};
+// FC0C command 1: the sensor drops one track, e.g. a ghost. A real person is simply picked up again.
+const fp400RemoveTarget = {
+    key: ['remove_target'],
+    convertSet: async (entity, key, value, meta) => {
+        const targetId = Number(value);
+        if (String(value).trim() === '' || !Number.isInteger(targetId) || targetId < 0 || targetId > 255) {
+            throw new Error('remove_target needs a target id from targets_xy (0..255)');
+        }
+        const result = await meta.device.getEndpoint(1).command('aqaraFp400Location', 'removeDetectionTarget', {targetId},
+            {...manufacturerOptions, disableDefaultResponse: false, disableResponse: false});
+        if (result?.statusCode !== 0) throw new Error(`The sensor did not accept removing target ${targetId}: ${JSON.stringify(result)}`);
+        return {state: {}};
+    },
+};
 const fp400TrackingExposes = [
+    e.action([...motionEvents, ...Array.from({length: 8}, (_, i) => [`software_zone_${i + 1}_enter`, `software_zone_${i + 1}_leave`]).flat()])
+        .withDescription('Movement events from the sensor (enter, leave, approach, away, and left/right in/out in left_right mode) and software zone enter/leave'),
+    e.text('remove_target', ea.SET).withCategory('config')
+        .withDescription('Make the sensor forget one tracked target by its id from targets_xy, for example a ghost. Real people are detected again.'),
+    e.text('motion_last_frame', ea.STATE).withCategory('diagnostic').withDescription('Latest raw FC0B movement event, hex'),
     e.enum('tracking_status', ea.STATE, ['valid','invalid','stale']).withCategory('diagnostic').withDescription('Validity of position reports; invalid frames do not clear targets'),
     e.text('tracking_last_frame', ea.STATE).withCategory('diagnostic').withDescription('Latest FC0C position event, hex (first 120 bytes)'),
     e.text('tracking_last_update', ea.STATE).withCategory('diagnostic').withDescription('Time of last complete position report'),
@@ -619,7 +687,7 @@ export default {
     vendor: 'Aqara',
     description: 'Spatial multi-sensor (presence, illuminance and people count)',
     // Numeric-name copies catch reports that arrive before the custom clusters are registered.
-    fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400Tracking,
+    fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400Tracking, fp400Motion,
         fp400ZoneSettingsReport, fp400ZoneAbsenceReport,
         fp400CapacityReport, {...fp400CapacityReport, cluster: '64524'},
         fp400InstallationReport, {...fp400InstallationReport, cluster: '64522'},
@@ -632,11 +700,11 @@ export default {
         aqaraActivityState,
         {...aqaraActivityState, cluster: '64524'},
     ],
-    toZigbee: [softwareZoneControl, fp400ZoneSettingsControl, fp400CapacityGet,
+    toZigbee: [softwareZoneControl, fp400RemoveTarget, fp400ZoneSettingsControl, fp400CapacityGet,
         ...fp400InstallationControl.key.map(key => ({...fp400InstallationControl, key: [key]})),
         ...fp400RegionControl.key.map(key => ({...fp400RegionControl, key: [key]})),
         ...fp400RegionGet.key.map(key => ({...fp400RegionGet, key: [key]})),
-        ...fp400InterferenceZone.key.map(key => ({...fp400InterferenceZone, key: [key]})), fp400Refresh, ...Object.keys(configOptions).map((key) => ({...fp400ConfigControl, key: [key]})), fp400Learning, fp400SensitivityControl, fp400AbsenceControl, fp400DepthControl],
+        ...fp400AreaControl.key.map(key => ({...fp400AreaControl, key: [key]})), fp400Refresh, ...Object.keys(configOptions).map((key) => ({...fp400ConfigControl, key: [key]})), fp400Learning, fp400SensitivityControl, fp400AbsenceControl, fp400DepthControl],
     exposes: [...softwareZoneExposes, ...fp400TrackingExposes,
         ...fp400ZoneExposes,
         ...fp400AdditionalExposes,
@@ -663,6 +731,7 @@ export default {
             if(context)clearInterval(context.timer);
             softwareZoneContexts.delete(event.data.ieeeAddr);
             deviceLocks.delete(event.data.ieeeAddr);
+            regionsReadAt.delete(event.data.ieeeAddr);
         }
     },
     extend: [
@@ -686,12 +755,11 @@ export default {
             ID: 64524,
             manufacturerCode: 0x115f,
             attributes: {activityState: {ID: 7, name: 'activityState', type: 0x30}},
-            commands: {subscribeLocationData:{ID:0,name:'subscribeLocationData',parameters:[{name:'timeout',type:0x21}]}},
+            commands: {subscribeLocationData:{ID:0,name:'subscribeLocationData',parameters:[{name:'timeout',type:0x21}]},
+                removeDetectionTarget:{ID:1,name:'removeDetectionTarget',parameters:[{name:'targetId',type:0x20}]}},
             commandsResponse: {},
         }),
-        m.poll({key:'fp400_tracking_subscription',defaultIntervalSeconds:10,poll:async(device)=>{
-            if(Object.keys(device.meta.fp400SoftwareZones ?? {}).length)await subscribeTracking(device);
-        }}),
+        m.poll({key:'fp400_tracking_subscription',defaultIntervalSeconds:10,poll:fp400Poll}),
         m.deviceEndpoints({
             multiEndpointSkip: [...zoneSettingKeys, 'maximum_detection_targets', ...Object.keys(configOptions), ...fp400AdditionalExposes.map(expose => expose.property), 'spatial_learning', 'detection_depth', 'presence_sensitivity', 'absence_timeout'],
             endpoints: Object.fromEntries(Array.from({length: 10}, (_, i) => [String(i + 1), i + 1])),

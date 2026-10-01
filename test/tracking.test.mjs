@@ -1,13 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {decodeTrackingFrame} from '../z2m/aqara-fp400.mjs';
+import {decodeTrackingFrame,worldToGrid} from '../z2m/aqara-fp400.mjs';
 // Published real 3-target frame, truncated on Ember (upstream issue #33146).
 const truncated = Buffer.from('1c5f11758b00004c03000900200029220029150129000029000021a00f300030fe20000900200129cfff290402290000290b0021d007300030fe20000900200229beff29010029000029000021d00730','hex');
 test('decode complete records including signed coordinates', () => {
     const complete = Buffer.from(truncated.subarray(0,60)); complete.writeUInt16LE(2,8);
     const targets=decodeTrackingFrame(complete);
     assert.equal(targets.length,2);
-    assert.deepEqual(targets[1],{id:1,x:-49,y:516,v3:0,v4:11,v5:2000,s1:0,s2:254,s3:0});
+    assert.deepEqual(targets[1],{id:1,x:-49,y:516,cell:0,activity:11,fall:2000,posture:0,zone:254,in_zone:0});
 });
 test('valid empty report is an empty list',()=>assert.deepEqual(decodeTrackingFrame(Buffer.from('1c5f11758b00004c0000','hex')),[]));
 test('truncation, incorrect tags, duplicates, oversized lists never mean empty',()=>{
@@ -20,4 +20,11 @@ test('truncation, incorrect tags, duplicates, oversized lists never mean empty',
 test('unrelated events and ordinary reports are ignored',()=>{
     assert.equal(decodeTrackingFrame(Buffer.from('1c5f11758b030000','hex')),undefined);
     assert.equal(decodeTrackingFrame(Buffer.from('1c5f11750a000000','hex')),undefined);
+});
+test('the sensor\'s own cell for a target matches our grid (record captured from a real FP400)',()=>{
+ const rec=Buffer.from('0900200029e9ff290e012908052902002100003000307f2000','hex');rec.writeInt16LE(270,8);rec[22]=255;
+ const [t]=decodeTrackingFrame(Buffer.concat([Buffer.from('1c5f113b8b00004c0100','hex'),rec]));
+ assert.deepEqual({x:t.x,y:t.y,row:t.cell>>8,col:t.cell&255,activity:t.activity},{x:-23,y:270,row:5,col:8,activity:2});
+ const g=worldToGrid({x_min:t.x,x_max:t.x+1,y_min:t.y,y_max:t.y+1});
+ assert.deepEqual([g.row_start,g.column_start],[5,8]);
 });

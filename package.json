@@ -1,7 +1,7 @@
 {
   "name": "aqara-fp400-zone-card",
-  "version": "0.1.0",
-  "description": "Presence zones and interference blocks for the Aqara FP400 on Zigbee2MQTT, with a Home Assistant dashboard card",
+  "version": "0.2.0",
+  "description": "Presence zones, areas and settings for the Aqara FP400 on Zigbee2MQTT, with a Home Assistant dashboard card",
   "license": "MIT",
   "private": true,
   "type": "module",

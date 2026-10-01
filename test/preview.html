@@ -1,40 +1,59 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FP400 grid · test preview</title><style>body{margin:0;padding:16px;background:#0b131b;color:#94a9b7;font:12px system-ui}.preview-note{max-width:1440px;margin:auto;padding:4px 8px 8px}.phone{max-width:390px;margin:auto}a{color:#67e4b8}</style></head><body><div class="preview-note">TEST PREVIEW · Sample positions; saves are simulated. <a href="?phone=1">Phone size</a> · <a href="?">Desktop size</a></div><main><fp400-zone-card></fp400-zone-card></main><script type="module">
 import '../dist/fp400-zone-card.js';
-const params=new URLSearchParams(location.search);
+// URL options: prefix=<device> · auto (find the device) · latency=<ms> · tick=<ms> · phone
+// noblocks (no area controls) · oldconv (the 0.1.0 converter: ignore spots only, no counts, no remove_target)
+const params=new URLSearchParams(location.search),old=params.has('oldconv');
 const device=params.get('prefix')??'0x54ef440000000001',card=document.querySelector('fp400-zone-card'),states={};
 if(params.has('phone'))document.querySelector('main').className='phone';
-const set=(domain,key,state)=>states[`${domain}.${device}_${key}`]={state,attributes:{}};
+const set=(domain,key,state,attributes={})=>states[`${domain}.${device}_${key}`]={state,attributes};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-for(let i=1;i<=8;i++){set('text',`software_zone_${i}_config`,'clear');set('binary_sensor',`software_zone_${i}_occupancy`,'off');set('binary_sensor',`software_zone_${i}_available`,'on');}
+for(let i=1;i<=8;i++){set('text',`software_zone_${i}_config`,'clear');set('binary_sensor',`software_zone_${i}_occupancy`,'off');set('binary_sensor',`software_zone_${i}_available`,'on');if(!old){set('sensor',`software_zone_${i}_count`,'unknown');set('sensor',`software_zone_${i}_activity`,'unknown');}}
 set('text','software_zone_1_config',JSON.stringify({name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3}));
 set('text','software_zone_2_config',JSON.stringify({name:'Bed',x_min:-10,x_max:180,y_min:210,y_max:320,absence_timeout:3}));
-set('sensor','targets_xy','1:-25:82');set('sensor','tracking_status','valid');set('binary_sensor','software_zone_1_occupancy','on');
-// Simulated converter: 20 rows x 16 cols of 50 cm cells (x -400..400, y 0..1000), columns right to left.
+// Someone sitting at the desk, and a ghost (target 4, shown as 5) left of the bed.
+set('sensor','targets_xy','1:-25:82;4:-160:260');set('sensor','tracking_status','valid');
+set('binary_sensor','software_zone_1_occupancy','on');if(!old){set('sensor','software_zone_1_count','1');set('sensor','software_zone_1_activity','still');set('text','remove_target','unknown');}
+// Sensor settings as the converter exposes them.
+if(!params.has('nosettings')){
+    for(const [key,state,options] of [['presence_sensitivity','medium',['low','medium','high']],['proximity_distance','far',['far','medium','near']],['detection_direction','omnidirectional',['omnidirectional','left_right']],
+        ['installation_mode','wall',['unknown','wall','ceiling']],['side_installation','wall',['unknown','wall','left_corner','right_corner']],['coordinate_reverse','disabled',['disabled','enabled','auto']]])set('select',key,state,{options});
+    set('number','absence_timeout','10',{min:10,max:300,step:1});set('number','installation_height','1700',{min:0,max:65535,step:1});
+    for(const key of ['ai_high_precision','ai_adaptive_sensitivity','ai_entry_exit_recognition','ai_interference_recognition','human_count_enabled'])set('switch',key,'off');
+    set('button','spatial_learning','unknown');set('button','refresh_configuration','unknown');set('sensor','learning_result_time','2026-09-30T09:27:37.721Z');
+}
+// Simulated converter: three masks of 20 rows x 16 cols of 50 cm cells (x -400..400, y 0..1000), columns right to left.
 // Like the real converter, each edit reads the mask, waits for the radio, then writes it back,
 // and Home Assistant's service call returns before that work finishes.
-const mask=new Uint8Array(40);
-const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,calls:[]};
-const maskHex=()=>[...mask].map(b=>b.toString(16).padStart(2,'0')).join('');
+const AREAS=['interference','entry_exit','edge'],types=params.has('noblocks')?[]:old?['interference']:AREAS;
+const masks=Object.fromEntries(AREAS.map(t=>[t,new Uint8Array(40)]));
+const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,keepTargets:false,calls:[]};
+const maskHex=t=>[...masks[t]].map(b=>b.toString(16).padStart(2,'0')).join('');
 function cellBits(r){
     const r0=Math.max(0,Math.floor(r.y_min/50)),r1=Math.min(19,Math.ceil(r.y_max/50)-1);
     const c0=Math.max(0,8-Math.ceil(r.x_max/50)),c1=Math.min(15,7-Math.floor(r.x_min/50));
     const bits=[];for(let row=r0;row<=r1;row++)for(let col=c0;col<=c1;col++)bits.push(row*16+col);return bits;
 }
-if(!params.has('noblocks')){set('sensor','interference_mask_hex',maskHex());for(const k of ['interference_zone_add','interference_zone_remove','interference_clear'])set('text',k,'unknown');}
-async function convert(key,value){
-    const read=Uint8Array.from(mask);
+for(const t of types){set('sensor',`${t}_mask_hex`,maskHex(t));for(const k of ['zone_add','zone_remove','clear'])set('text',`${t}_${k}`,'unknown');}
+async function convert(type,op,value){
+    const read=Uint8Array.from(masks[type]);
     await sleep(sim.latency);
     if(sim.fail)return;
-    if(key==='interference_clear')read.fill(0);
-    else for(const b of cellBits(JSON.parse(value))){if(key==='interference_zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}
-    mask.set(read);set('sensor','interference_mask_hex',maskHex());card.hass={...hass};
+    if(op==='clear')read.fill(0);
+    else for(const b of cellBits(JSON.parse(value))){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}
+    masks[type].set(read);set('sensor',`${type}_mask_hex`,maskHex(type));card.hass={...hass};
 }
 const hass={states,user:{is_admin:false},callService:async(domain,service,data)=>{
     sim.calls.push({domain,service,...data});
     await sleep(20);
-    const key=data.entity_id.slice(`text.${device}_`.length);
-    if(key.startsWith('interference_'))convert(key,data.value);
-    else sleep(sim.latency).then(()=>{states[data.entity_id]={state:data.value,attributes:{}};card.hass={...hass};});
+    const id=data.entity_id,key=id.slice(id.indexOf('.')+device.length+2),type=AREAS.find(t=>key.startsWith(`${t}_`));
+    const later=fn=>sleep(sim.latency).then(()=>{if(sim.fail)return;fn();card.hass={...hass};});
+    if(domain==='text'&&type)convert(type,key.slice(type.length+1),data.value);
+    else if(key==='remove_target')later(()=>{states[id]={state:data.value,attributes:{}};if(!sim.keepTargets)set('sensor','targets_xy',states[`sensor.${device}_targets_xy`].state.split(';').filter(t=>t.split(':')[0]!==data.value).join(';')||'none');});
+    else if(domain==='select')later(()=>{states[id]={...states[id],state:data.option};});
+    else if(domain==='number')later(()=>{states[id]={...states[id],state:String(data.value)};});
+    else if(domain==='switch')later(()=>{states[id]={...states[id],state:service==='turn_on'?'on':'off'};});
+    else if(domain==='button'){states[id]={...states[id],state:new Date().toISOString()};if(key==='spatial_learning')sleep(sim.latency*3).then(()=>{set('sensor','learning_result_time',new Date().toISOString());card.hass={...hass};});}
+    else later(()=>{states[id]={state:data.value,attributes:{}};});
 }};
 card.setConfig(params.has('auto')?{}:{device});
 function update(){set('sensor','tracking_last_update',new Date().toISOString());card.hass={...hass};}

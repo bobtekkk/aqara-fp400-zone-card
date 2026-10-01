@@ -75,6 +75,18 @@ test('a position frame reports its status and is not published a second time by 
  assert.equal(bad.tracking_status,'invalid');assert.equal(bad.software_zone_1_occupancy,null);
  await definition.onEvent({type:'stop',data:{ieeeAddr:device.ieeeAddr}});
 });
+test('zone people count, moving/still, and enter/leave events',()=>{
+ const t=new SoftwareZoneTracker({1:desk});
+ assert.deepEqual(t.accept([{id:0,x:0,y:80,activity:2}],0),[],'nothing is known before the first frame');
+ assert.equal(t.state(0).software_zone_1_count,1);assert.equal(t.state(0).software_zone_1_activity,'still');
+ assert.deepEqual(t.accept([{id:0,x:0,y:80,activity:1},{id:1,x:-50,y:100,activity:2}],100),[{zone:1,type:'enter'}]);
+ assert.equal(t.state(100).software_zone_1_count,2);assert.equal(t.state(100).software_zone_1_activity,'moving');
+ assert.deepEqual(t.accept([{id:1,x:-50,y:100,activity:2}],200),[{zone:1,type:'leave'}]);
+ assert.deepEqual(t.accept([],300),[{zone:1,type:'leave'}]);
+ assert.equal(t.state(300).software_zone_1_count,0);assert.equal(t.state(300).software_zone_1_activity,null);
+ t.reset(1);assert.deepEqual(t.accept([{id:5,x:0,y:80}],400),[],'no burst of events right after an edit');
+ assert.equal(t.state(31400).software_zone_1_count,null,'stale data has no count');
+});
 test('blank zone names are rejected like the card does',()=>assert.throws(()=>parseSoftwareZone({...desk,name:'   '})));
 test('configuration controls cannot be mistaken for numbered endpoints',()=>{
  const endpoints=Object.keys(definition.extend.find(e=>e.endpoint).endpoint());

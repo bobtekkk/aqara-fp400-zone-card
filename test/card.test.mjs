@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,FP400ZoneCard} from '../dist/fp400-zone-card.js';
+import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,draftMask,FP400ZoneCard} from '../dist/fp400-zone-card.js';
 const desk={name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3};
 test('grid drawing works in every drag direction and snaps to half metres',()=>{
  assert.deepEqual(rectangleFromPoints({x:114,y:174},{x:-112,y:21}),{x_min:-100,x_max:100,y_min:0,y_max:150});
@@ -28,7 +28,7 @@ test('invalid input never becomes a usable zone; user names remain data',()=>{
  assert.deepEqual(parseTargets('none'),[]);
 });
 function editor(){
- const c=Object.create(FP400ZoneCard.prototype);c.config={device:'0x54ef440000000001'};c.saved={1:desk,2:null};c.drafts={1:{...desk,name:'Desk revised'},2:null};c.base={1:{...desk}};c.dirty=new Set([1]);c.loaded=new Set([1,2]);c.saving=false;c.render=()=>{};c.notice=(text)=>{c.message=text;};c._hass={user:{is_admin:false},callService:async()=>{}};return c;
+ const c=Object.create(FP400ZoneCard.prototype);c.config={device:'0x54ef440000000001'};c.saved={1:desk,2:null};c.drafts={1:{...desk,name:'Desk revised'},2:null};c.base={1:{...desk}};c.dirty=new Set([1]);c.loaded=new Set([1,2]);c.saving=false;c.pendingAreas=[];c.pendingClears=new Set();c.render=()=>{};c.notice=(text)=>{c.message=text;};c._hass={user:{is_admin:false},callService:async()=>{}};return c;
 }
 test('save sends only changed zones and waits for confirmed device state',async()=>{
  const c=editor(),sent=[];c._hass.callService=async(domain,service,data)=>{sent.push({domain,service,data});c.saved[1]=JSON.parse(data.value);};
@@ -53,15 +53,48 @@ test('a confirmation that arrives after the timeout clears the unsaved mark',asy
 test('concurrent external edits block writes rather than overwrite them',async()=>{
  const c=editor();c.saved[1]={...desk,name:'Changed elsewhere'};let calls=0;c._hass.callService=async()=>{calls++;};await c.save();assert.equal(calls,0);assert.match(c.message,/changed elsewhere/);
 });
-test('blocks: clear first, then one confirmed add at a time, skipping covered blocks',async()=>{
- const c=editor(),key='sensor.0x54ef440000000001_interference_mask_hex',bits=new Set([0,200]),calls=[];
- c.dirty=new Set();c.base={};c.pendingClear=true;c.pendingBlocks=[{x_min:-400,x_max:-300,y_min:0,y_max:100},{x_min:-400,x_max:-350,y_min:0,y_max:50}];
+// A fake sensor: masks change a little after each call, like the real converter.
+function areaSensor(c,bits){
+ const key='sensor.0x54ef440000000001_interference_mask_hex',calls=[];
  const hex=()=>{const m=new Uint8Array(40);for(const b of bits)m[b>>3]|=0x80>>(b%8);return [...m].map(v=>v.toString(16).padStart(2,'0')).join('');};
  c._hass.states={[key]:{state:hex()}};
- c._hass.callService=async(d,s,data)=>{const op=data.entity_id.split('_').slice(-2).join('_');calls.push(op);setTimeout(()=>{if(op==='interference_clear')bits.clear();else for(const b of rectBits(JSON.parse(data.value)))bits.add(b);c._hass.states[key]={state:hex()};},40);};
+ c._hass.callService=async(d,s,data)=>{const op=data.entity_id.split('_').slice(-2).join('_');calls.push(op);setTimeout(()=>{if(op==='interference_clear')bits.clear();else for(const b of rectBits(JSON.parse(data.value)))op==='zone_add'?bits.add(b):bits.delete(b);c._hass.states[key]={state:hex()};},40);};
+ return calls;
+}
+test('areas: clear first, then one confirmed edit at a time, skipping edits already in place',async()=>{
+ const c=editor(),bits=new Set([0,200]);c.dirty=new Set();c.base={};
+ c.pendingClears=new Set(['interference']);c.pendingAreas=[{type:'interference',op:'add',rect:{x_min:-400,x_max:-300,y_min:0,y_max:100}},{type:'interference',op:'add',rect:{x_min:-400,x_max:-350,y_min:0,y_max:50}}];
+ const calls=areaSensor(c,bits);
  await c.save();
  assert.deepEqual(calls,['interference_clear','zone_add']);assert.deepEqual([...bits].sort((a,b)=>a-b),rectBits({x_min:-400,x_max:-300,y_min:0,y_max:100}));
- assert.equal(c.pendingBlocks.length,0);assert.equal(c.pendingClear,false);assert.equal(c.mode,'select');assert.match(c.message,/Saved/);
+ assert.equal(c.pendingAreas.length,0);assert.equal(c.pendingClears.size,0);assert.equal(c.mode,'select');assert.match(c.message,/Saved/);
+});
+test('areas: erasing sends a remove and waits until the cells are gone',async()=>{
+ const c=editor(),painted=rectBits({x_min:-400,x_max:-200,y_min:0,y_max:100}),bits=new Set(painted);c.dirty=new Set();c.base={};
+ c.pendingAreas=[{type:'interference',op:'remove',rect:{x_min:-400,x_max:-300,y_min:0,y_max:100}},{type:'interference',op:'remove',rect:{x_min:-400,x_max:-350,y_min:0,y_max:50}}];
+ const calls=areaSensor(c,bits);
+ await c.save();
+ assert.deepEqual(calls,['zone_remove'],'the second erase is already done by the first');
+ assert.deepEqual([...bits].sort((a,b)=>a-b),rectBits({x_min:-300,x_max:-200,y_min:0,y_max:100}));
+});
+test('the map preview applies a clear, paints and erases in order',()=>{
+ const r=(x_min,x_max)=>({x_min,x_max,y_min:0,y_max:50});
+ assert.deepEqual([...draftMask(new Set([100]),false,[{op:'add',rect:r(300,400)},{op:'remove',rect:r(350,400)}])].sort((a,b)=>a-b),[1,100]);
+ assert.deepEqual([...draftMask(new Set([100]),true,[{op:'add',rect:r(350,400)}])],[0]);
+ assert.deepEqual([...draftMask(null)],[]);
+});
+test('admins get zone entities named after the zone; names typed by hand are kept; deleting gives back only names the card gave',async()=>{
+ const c=editor(),ws=[],id=s=>`0x54ef440000000001_software_zone_1_${s}`;
+ c._hass.user.is_admin=true;c._hass.callWS=async m=>{ws.push(m);};
+ c._hass.states={[`binary_sensor.${id('occupancy')}`]:{attributes:{friendly_name:'Desk occupancy'}},[`binary_sensor.${id('available')}`]:{attributes:{friendly_name:'My own name'}},
+  [`text.${id('config')}`]:{attributes:{friendly_name:'Desk zone configuration'}},[`sensor.${id('count')}`]:{attributes:{friendly_name:'x Software zone 1 count'}}};
+ await c.nameEntities(1,{...desk,name:'Office'},desk);
+ assert.deepEqual(ws.map(m=>[m.entity_id.split('.')[0]+'.'+m.entity_id.split('_').slice(-1)[0],m.name,m.device_class]),[['binary_sensor.occupancy','Office occupancy','occupancy'],['text.config','Office zone configuration',undefined],['sensor.count','Office people',undefined]],'"My own name" stays');
+ ws.length=0;await c.nameEntities(1,desk,desk);
+ assert.deepEqual(ws.map(m=>m.name),['Desk people'],'on load, only the still-default count is named; nothing else changes');
+ ws.length=0;await c.nameEntities(1,null,desk);
+ assert.deepEqual(ws.map(m=>[m.entity_id.split('_').slice(-1)[0],m.name]),[['occupancy',null],['config',null]],'only names the card set are reset; a missing entity (activity) is skipped');
+ c._hass.user.is_admin=false;ws.length=0;await c.nameEntities(1,desk,null);assert.equal(ws.length,0);
 });
 test('deletion uses clear; partial save preserves only the failed changes',async()=>{
  const c=editor();c.drafts[1]=null;c.drafts[2]={...desk,name:'Second'};c.base[2]=null;c.dirty.add(2);let calls=0;
