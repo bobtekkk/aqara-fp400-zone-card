@@ -123,6 +123,10 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 - Ember (EZSP) coordinators may cut long reports with several people in them; Z-Stack coordinators are not affected.
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
 
+## Changelog
+
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md). The same notes are on the [Releases](https://github.com/bobtekkk/aqara-fp400-zone-card/releases) page, and HACS shows them when an update is available.
+
 ## Development
 
 ```sh
