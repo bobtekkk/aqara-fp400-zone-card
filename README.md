@@ -13,7 +13,9 @@ Draw presence zones and block "ghost" spots for the **Aqara FP400** spatial sens
 - **Live map.** See tracked people move, with metre rulers. Pan, zoom and snap to a 0.5 m or 0.1 m grid.
 - **Safe editing.** Nothing changes until you press Save, and the card only says "Saved" once the change is confirmed.
 
-> Using the FP400 over **Matter** instead of Zigbee? See [RAR/ha-aqara-fp400](https://github.com/RAR/ha-aqara-fp400).
+**No Matter or Thread hardware needed.** Everything runs over Zigbee, on the Zigbee coordinator you already use with Zigbee2MQTT. No Thread border router, no Matter controller, no Aqara hub.
+
+> Already using the FP400 over Matter instead? See [RAR/ha-aqara-fp400](https://github.com/RAR/ha-aqara-fp400).
 
 ## How it fits together
 
@@ -24,7 +26,7 @@ Draw presence zones and block "ghost" spots for the **Aqara FP400** spatial sens
 
 ## Requirements
 
-- An Aqara FP400 paired to **Zigbee2MQTT 2.x** (tested with 2.14.1)
+- An Aqara FP400 paired to **Zigbee2MQTT 2.x** (tested with 2.14.1) through your existing Zigbee coordinator. No Thread or Matter hardware.
 - Home Assistant with the MQTT integration and [HACS](https://hacs.xyz)
 
 ## Install
