@@ -3,6 +3,7 @@
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
 [![Validate](https://github.com/bobtekkk/aqara-fp400-zone-card/actions/workflows/validate.yml/badge.svg)](https://github.com/bobtekkk/aqara-fp400-zone-card/actions/workflows/validate.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/bobtekkk)
 
 Draw presence zones and block "ghost" spots for the **Aqara FP400** spatial sensor on **Zigbee2MQTT**, straight from a Home Assistant dashboard.
 
@@ -103,6 +104,12 @@ npm run e2e   # drives the card in a browser with real mouse input
 ```
 
 `npm run e2e` needs Playwright's Chromium once: `npx playwright-core install chromium`. `test/preview.html` runs the card against a simulated sensor; serve the repository folder with any static web server to try it.
+
+## Support
+
+If this saved you an Aqara hub or a few evenings of fiddling, you can buy me a coffee:
+
+<a href="https://buymeacoffee.com/bobtekkk"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="40"></a>
 
 ## Credits
 
