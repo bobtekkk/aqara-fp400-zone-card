@@ -9,7 +9,7 @@ Draw presence zones and block "ghost" spots for the **Aqara FP400** spatial sens
 
 ![The card: a live room map with two zones, a tracked person and a blocked interference area](docs/screenshot.png)
 
-- **Up to 8 zones.** Draw rectangles on a live map; each one becomes its own occupancy sensor in Home Assistant.
+- **Up to 8 zones.** Draw rectangles on a live map; each one becomes its own occupancy sensor in Home Assistant, named after the zone (a zone called "Desk" gives you "Desk occupancy").
 - **Interference blocks.** Mark spots that cause fake targets (curtain, fan, TV). They are written to the sensor's own interference area, like the Aqara app does.
 - **Live map.** See tracked people move, with metre rulers. Pan, zoom and snap to a 0.5 m or 0.1 m grid.
 - **Safe editing.** Nothing changes until you press Save, and the card only says "Saved" once the change is confirmed.
@@ -77,15 +77,17 @@ device: living_room_fp400 # optional
 - Drag empty space to pan, use the mouse wheel to zoom, drag a zone to move it and its corners to resize it. Arrow keys nudge the selected zone.
 - **Discard** throws away everything you have not saved.
 
-Each zone gives you:
+### Every zone becomes a sensor
 
-| Entity | Meaning |
-|---|---|
-| `binary_sensor.<fp400>_software_zone_N_occupancy` | Someone is in zone N. Unknown while position data is missing or stale. |
-| `binary_sensor.<fp400>_software_zone_N_available` | Zone N has fresh, complete position data. |
-| `text.<fp400>_software_zone_N_config` | The zone rectangle as JSON (what the card edits). |
+When you save a zone, Home Assistant gets a sensor named after it: a zone called **Desk** shows up as **Desk occupancy**. It turns on while someone is in that zone, so you can use it in automations and dashboards like any motion sensor. To find it, search for the zone's name under Settings → Devices & services → Entities.
 
-If you are an admin, the card also names these after your zone, for example "Desk occupancy".
+| Entity | Name in Home Assistant | Meaning |
+|---|---|---|
+| `binary_sensor.<fp400>_software_zone_N_occupancy` | Desk occupancy | Someone is in the zone. Unknown while position data is missing or stale. |
+| `binary_sensor.<fp400>_software_zone_N_available` | Desk tracking available | The zone has fresh, complete position data. |
+| `text.<fp400>_software_zone_N_config` | Desk zone configuration | The zone rectangle as JSON (what the card edits). |
+
+N is the zone's number, shown next to **Zone details** in the card. The entity ID never changes, so automations keep working when you rename or move a zone. The naming needs a Home Assistant admin; for other users the sensors keep their default names, like `<fp400> Software zone 1 occupancy`.
 
 ## Good to know
 
