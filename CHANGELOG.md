@@ -7,6 +7,13 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-02
+
+### Fixed
+
+- Zones no longer turn "unknown" when the sensor tracks 3 or more targets on an Ember coordinator (Sonoff ZBDongle-E, SkyConnect). Those coordinators cut the position report at 80 bytes ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)); the converter now uses every position that arrives. With 3 targets nothing is lost. With 4 or more, a target missing from the report is assumed to stay where it was last seen.
+- `target_count` now shows how many targets the sensor reported, even when the report was cut.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
@@ -40,6 +47,7 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/releases/tag/v0.1.0

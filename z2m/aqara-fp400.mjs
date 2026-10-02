@@ -473,23 +473,27 @@ const fp400ZoneExposes = [
         .withDescription('Device-reported tracking capacity; not the current people count'),
 ];
 // FC0C event 0: the target list. Records follow the Matter LocationInfo order: id, x, y, cell (row << 8 | col),
-// activity (1 moving, 2 still), fall, posture, zone id, in-zone id. Unknown/truncated packets never become an empty list.
+// activity (1 moving, 2 still), fall, posture, zone id, in-zone id.
+// Ember coordinators pass on only the first 80 bytes (zigbee-herdsman#1886), which cuts reports with 3 or more targets.
+// Returns every target whose position and activity arrived, and how many the sensor reported.
+// Anything that does not parse throws: an unreadable report never becomes an empty room.
 export function decodeTrackingFrame(data) {
     if (!Buffer.isBuffer(data) || data.length < 7 || ![0x0c, 0x1c].includes(data[0]) ||
         data.readUInt16LE(1) !== 0x115f || data[4] !== 0x8b || data.readUInt16LE(5) !== 0) return undefined;
     if (data.length < 10 || data[7] !== 0x4c) throw new Error('Unsupported tracking array');
-    const count = data.readUInt16LE(8);
-    if (count > 10 || data.length !== 10 + 25 * count) throw new Error('Incomplete tracking frame');
+    const reported = data.readUInt16LE(8);
+    if (reported > 10 || data.length > 10 + 25 * reported) throw new Error('Invalid tracking frame');
     const targets = [], ids = new Set();
     const tags = [[0,9],[1,0],[2,0x20],[4,0x29],[7,0x29],[10,0x29],[13,0x29],[16,0x21],[19,0x30],[21,0x30],[23,0x20]];
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < reported; index++) {
         const r = data.subarray(10 + index * 25, 35 + index * 25);
-        if (tags.some(([offset, tag]) => r[offset] !== tag) || ids.has(r[3])) throw new Error('Invalid tracking record');
+        if (r.length < 16) break; // cut off before this target's activity
+        if (tags.some(([offset, tag]) => offset < r.length && r[offset] !== tag) || ids.has(r[3])) throw new Error('Invalid tracking record');
         ids.add(r[3]);
         targets.push({id:r[3], x:r.readInt16LE(5), y:r.readInt16LE(8), cell:r.readInt16LE(11), activity:r.readInt16LE(14),
-            fall:r.readUInt16LE(17), posture:r[20], zone:r[22], in_zone:r[24]});
+            ...(r.length === 25 ? {fall:r.readUInt16LE(17), posture:r[20], zone:r[22], in_zone:r[24]} : {})});
     }
-    return targets;
+    return {targets, reported};
 }
 // Software zones use the observed x/y coordinates (approximately centimetres).
 // Geometry must be checked in the room. They never write native zone records.
@@ -508,15 +512,22 @@ export function parseSoftwareZone(value) {
     return zone;
 }
 export class SoftwareZoneTracker {
-    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.awaiting=new Set();this.invalid=false;}
-    // Returns the targets that entered or left each zone with this frame.
-    accept(targets, now) {
+    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.awaiting=new Set();this.invalid=false;}
+    // Returns the targets that entered or left each zone with this frame. When the report was cut short
+    // (reported > targets.length), targets missing from it are assumed to stay where they were last seen;
+    // if even that cannot account for every target, no zone starts counting down to empty.
+    accept(targets, now, reported = targets.length) {
         this.lastAt=now;this.invalid=false;
-        const events=[];
+        const decoded=new Set(targets.map(t=>t.id)),missing=reported-targets.length;
+        const carried=missing>0?[...this.lastSeen.values()].filter(t=>!decoded.has(t.id)).sort((a,b)=>b.at-a.at).slice(0,missing):[];
+        const unaccounted=missing>carried.length;
+        if (missing<=0) this.lastSeen.clear(); // a complete report is the whole truth
+        for (const t of targets) this.lastSeen.set(t.id,{...t,at:now});
+        const all=[...targets,...carried],events=[];
         for (const [id,z] of Object.entries(this.zones)) {
-            const inZone=targets.filter(t=>t.x>=z.x_min && t.x<z.x_max && t.y>=z.y_min && t.y<z.y_max);
+            const inZone=all.filter(t=>t.x>=z.x_min && t.x<z.x_max && t.y>=z.y_min && t.y<z.y_max);
             if (inZone.length) {this.occupied[id]=true;delete this.outsideSince[id];}
-            else if (this.outsideSince[id]===undefined) this.outsideSince[id]=now;
+            else if (!unaccounted && this.outsideSince[id]===undefined) this.outsideSince[id]=now;
             const ids=new Set(inZone.map(t=>t.id)), before=this.inside[id];
             if (before && !this.awaiting.has(Number(id))) {
                 for (const t of ids) if (!before.ids.has(t)) events.push({zone:Number(id),type:'enter'});
@@ -534,14 +545,16 @@ export class SoftwareZoneTracker {
         const usable=fresh && !this.invalid;
         const result={tracking_status:!fresh?'stale':this.invalid?'invalid':'valid'};
         for (let id=1;id<=8;id++) {
-            const z=this.zones[id], prefix=`software_zone_${id}`, live=usable && !this.awaiting.has(id);
-            if (live && z && this.outsideSince[id]!==undefined && now-this.outsideSince[id]>=z.absence_timeout*1000) this.occupied[id]=false;
+            const z=this.zones[id], prefix=`software_zone_${id}`;
+            // Known once a report has shown someone in the zone or let it start counting down to empty.
+            const known=Boolean(z) && usable && !this.awaiting.has(id) && (this.occupied[id]!==undefined || this.outsideSince[id]!==undefined);
+            if (known && this.outsideSince[id]!==undefined && now-this.outsideSince[id]>=z.absence_timeout*1000) this.occupied[id]=false;
             result[`${prefix}_config`]=z?JSON.stringify(z):'clear';
-            result[`${prefix}_available`]=Boolean(z && live);
-            result[`${prefix}_occupancy`]=z && live ? Boolean(this.occupied[id]) : null;
+            result[`${prefix}_available`]=known;
+            result[`${prefix}_occupancy`]=known ? Boolean(this.occupied[id]) : null;
             const count=this.inside[id]?.ids.size ?? 0;
-            result[`${prefix}_count`]=z && live ? count : null;
-            result[`${prefix}_activity`]=z && live && count ? (this.inside[id].moving ? 'moving' : 'still') : null;
+            result[`${prefix}_count`]=known ? count : null;
+            result[`${prefix}_activity`]=known && count ? (this.inside[id].moving ? 'moving' : 'still') : null;
         }
         return result;
     }
@@ -621,14 +634,15 @@ const fp400Tracking = {
     convert: (model, msg, publish) => {
         if (msg.endpoint.ID !== 1) return;
         try {
-            const targets = decodeTrackingFrame(msg.data);
-            if (!targets) return;
+            const decoded = decodeTrackingFrame(msg.data);
+            if (!decoded) return;
+            const {targets, reported} = decoded;
             const context=softwareContext(msg.device,publish);
-            const events=context.tracker.accept(targets,Date.now());
+            const events=context.tracker.accept(targets,Date.now(),reported);
             // After this frame's state is published, so automations see the new counts.
             if (events.length) setImmediate(() => {for (const ev of events) publish?.({action:`software_zone_${ev.zone}_${ev.type}`});});
             return {...zoneState(context), tracking_last_frame:msg.data.toString('hex').slice(0, 240),
-                tracking_last_update:new Date().toISOString(), target_count:targets.length,
+                tracking_last_update:new Date().toISOString(), target_count:reported,
                 targets_xy:targets.map(t => `${t.id}:${t.x}:${t.y}`).join(';') || 'none',
                 tracking_targets:targets};
         } catch {

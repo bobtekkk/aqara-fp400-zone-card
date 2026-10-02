@@ -46,3 +46,11 @@ test('position frames publish zone enter events after the new state', async () =
     assert.deepEqual(published, [{action: 'software_zone_1_enter'}]);
     await definition.onEvent({type: 'stop', data: {ieeeAddr: device.ieeeAddr}});
 });
+test('a position report cut at 80 bytes (Ember) still updates the zones', () => {
+    const frames = definition.fromZigbee.find(c => c.cluster === 'aqaraFp400Location' && c.type.includes('raw'));
+    const device = {ieeeAddr: 'cut-test', meta: {fp400SoftwareZones: {1: desk}}};
+    const cut = frame([{id: 0, x: -119, y: 217}, {id: 6, x: 58, y: 514}, {id: 2, x: 0, y: 80}, {id: 4, x: -30, y: 98}]).subarray(0, 80);
+    const out = frames.convert({}, {endpoint: {ID: 1}, data: cut, device}, () => {});
+    assert.deepEqual([out.tracking_status, out.software_zone_1_occupancy, out.target_count, out.targets_xy], ['valid', true, 4, '0:-119:217;6:58:514;2:0:80']);
+    definition.onEvent({type: 'stop', data: {ieeeAddr: device.ieeeAddr}});
+});

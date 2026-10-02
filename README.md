@@ -120,7 +120,7 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 - Areas are 0.5 m cells written to the sensor's own memory, like the Aqara app does. Their left/right orientation follows the check against the device made by [RAR/ha-aqara-fp400](https://github.com/RAR/ha-aqara-fp400). If an ignore spot does not hide a ghost, please open an issue.
 - Painting **Outside room** cells replaces the converter's simple `detection_depth` setting (which cuts the room off at one distance); clear them to use it again.
 - The converter re-reads the areas every 5 minutes, so the card also shows changes made elsewhere.
-- Ember (EZSP) coordinators may cut long reports with several people in them; Z-Stack coordinators are not affected.
+- Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets nothing is lost; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
 
 ## Changelog

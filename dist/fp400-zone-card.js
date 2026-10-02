@@ -1,5 +1,5 @@
 /* Aqara FP400 zone card for Home Assistant + Zigbee2MQTT. https://github.com/bobtekkk/aqara-fp400-zone-card (MIT License) */
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const COLORS = ['#67e4b8','#9fa9ff','#f9bf73','#f28fad','#68cce8','#d6a0ef','#bddb79','#ff9d7a'];
 const LIMITS = {x_min:-400,x_max:400,y_min:-50,y_max:1000};
 // The sensor's own area masks, in sidebar order. The map draws them in reverse, so ignore spots end up on top.

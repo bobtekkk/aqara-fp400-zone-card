@@ -15,6 +15,26 @@ test('desk entry, delayed exit, and stale data',()=>{
  assert.equal(t.state(36000).software_zone_1_occupancy,null);
  assert.equal(t.state(36000).tracking_status,'stale');
 });
+test('a report cut short keeps missing targets where they were last seen',()=>{
+ const bed=parseSoftwareZone({name:'Bed',x_min:-60,x_max:150,y_min:210,y_max:320,absence_timeout:3});
+ const t=new SoftwareZoneTracker({1:desk,2:bed});
+ t.accept([{id:1,x:0,y:80,activity:2},{id:2,x:50,y:250,activity:1}],0);
+ t.accept([{id:1,x:0,y:80,activity:2},{id:7,x:-300,y:600,activity:2},{id:8,x:300,y:900,activity:2}],1000,4); // id 2 did not arrive
+ let s=t.state(9000);
+ assert.deepEqual([s.software_zone_2_occupancy,s.software_zone_2_count,s.software_zone_2_activity,s.tracking_status],[true,1,'moving','valid']);
+ t.accept([{id:1,x:0,y:80,activity:2}],10000); // a complete report without id 2: it is gone
+ s=t.state(13000);
+ assert.deepEqual([s.software_zone_1_occupancy,s.software_zone_2_occupancy,s.software_zone_2_count],[true,false,0]);
+});
+test('a cut report that cannot account for everyone never empties a zone',()=>{
+ const t=new SoftwareZoneTracker({1:desk});
+ t.accept([{id:9,x:300,y:900}],0,4); // just started: 3 of 4 targets unknown
+ assert.equal(t.state(10000).software_zone_1_occupancy,null);assert.equal(t.state(10000).software_zone_1_available,false);
+ t.accept([{id:9,x:300,y:900}],11000);
+ assert.equal(t.state(14000).software_zone_1_occupancy,false);
+ t.accept([{id:1,x:0,y:80}],15000);t.accept([{id:9,x:300,y:900}],16000,3); // id 1 was seen in the desk, then went missing
+ assert.equal(t.state(30000).software_zone_1_occupancy,true);
+});
 test('bad packet cannot imply absence; next complete snapshot recovers',()=>{
  const t=new SoftwareZoneTracker({1:desk});t.accept([{x:0,y:100}],0);t.invalid=true;
  assert.equal(t.state(1000).software_zone_1_available,false);
