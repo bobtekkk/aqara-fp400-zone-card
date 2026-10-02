@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import definition, {worldToGrid, fp400Poll} from '../z2m/aqara-fp400.mjs';
-import {rectBits, clampBlock} from '../dist/fp400-zone-card.js';
+import definition, {worldToGrid, fp400Poll, polygonCells} from '../z2m/aqara-fp400.mjs';
+import {rectBits, clampBlock, polygonBits, opPoints} from '../dist/fp400-zone-card.js';
 
 const gridBits = g => {const bits = []; for (let r = g.row_start; r <= g.row_end; r++) for (let c = g.column_start; c <= g.column_end; c++) bits.push(r * 16 + c); return bits;};
 const control = key => definition.toZigbee.find(c => c.key.includes(key));
@@ -76,4 +76,31 @@ test('area masks are read at start and then every 5 minutes, not on every poll',
     device.meta.fp400SoftwareZones = {1: {name: 'Desk'}};
     await fp400Poll(device);
     assert.deepEqual(commands, ['subscribeLocationData']); assert.equal(reads.length, 3);
+});
+test('card and converter pick the same cells for shapes drawn on a turned map', () => {
+    for (const rotation of [30, 45, -45, 90, 137, -170]) for (const rect of [{x_min:-200,x_max:150,y_min:100,y_max:400}, {x_min:0,x_max:50,y_min:300,y_max:350}, {x_min:-600,x_max:600,y_min:-100,y_max:1200}]) {
+        const points = opPoints({rect, rotation});
+        let expected; try {expected = polygonCells(points);} catch {expected = [];}
+        assert.deepEqual(polygonBits(points), expected, `${rotation} ${JSON.stringify(rect)}`);
+    }
+});
+test('a turned shape edits the cells whose centre lies inside it', async () => {
+    let mask = Buffer.alloc(40);
+    const endpoint = {read: async () => ({19: Buffer.from(mask)}), write: async (cluster, payload) => {mask = Buffer.from(payload[19].value);}};
+    const meta = {device: {ieeeAddr: 'shape-test', getEndpoint: () => endpoint}};
+    await control('interference_zone_add').convertSet(null, 'interference_zone_add', JSON.stringify({points: [[-100, 300], [-100, 200], [0, 200], [0, 300]]}), meta);
+    const bits = []; for (let b = 0; b < 320; b++) if (mask[b >> 3] & (0x80 >> (b % 8))) bits.push(b);
+    assert.deepEqual(bits, rectBits({x_min: -100, x_max: 0, y_min: 200, y_max: 300}));
+    await assert.rejects(() => control('interference_zone_add').convertSet(null, 'interference_zone_add', {points: [[0, -500], [100, -500], [100, -400]]}, meta), /outside the sensor grid/);
+    await assert.rejects(() => control('interference_zone_add').convertSet(null, 'interference_zone_add', {points: [[0, 1], [2, 3]]}, meta), /points must be/);
+});
+test('the map turn is kept with the sensor and published back', async () => {
+    const mapControl = definition.toZigbee.find(c => c.key.includes('map_rotation'));
+    const device = {meta: {}, save: async () => {}}, published = [];
+    assert.deepEqual(await mapControl.convertSet(null, 'map_rotation', 45, {device}), {state: {map_rotation: 45}});
+    assert.equal(device.meta.fp400MapRotation, 45);
+    await mapControl.convertGet(null, 'map_rotation', {device, publish: p => published.push(p)});
+    assert.deepEqual(published, [{map_rotation: 45}]);
+    await assert.rejects(() => mapControl.convertSet(null, 'map_rotation', 200, {device}), /-180..180/);
+    assert.equal(device.meta.fp400MapRotation, 45);
 });

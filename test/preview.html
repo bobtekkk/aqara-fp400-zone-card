@@ -1,7 +1,8 @@
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FP400 grid · test preview</title><style>body{margin:0;padding:16px;background:#0b131b;color:#94a9b7;font:12px system-ui}.preview-note{max-width:1440px;margin:auto;padding:4px 8px 8px}.phone{max-width:390px;margin:auto}a{color:#67e4b8}</style></head><body><div class="preview-note">TEST PREVIEW · Sample positions; saves are simulated. <a href="?phone=1">Phone size</a> · <a href="?">Desktop size</a></div><main><fp400-zone-card></fp400-zone-card></main><script type="module">
 import '../dist/fp400-zone-card.js';
-// URL options: prefix=<device> · auto (find the device) · latency=<ms> · tick=<ms> · phone
+// URL options: prefix=<device> · auto (find the device) · device=<name in the card config> · latency=<ms> · tick=<ms> · phone
 // noblocks (no area controls) · oldconv (the 0.1.0 converter: ignore spots only, no counts, no remove_target)
+// rotation=<deg> (map turned, converter 0.3) · offline (Zigbee2MQTT down: every entity unavailable)
 const params=new URLSearchParams(location.search),old=params.has('oldconv');
 const device=params.get('prefix')??'0x54ef440000000001',card=document.querySelector('fp400-zone-card'),states={};
 if(params.has('phone'))document.querySelector('main').className='phone';
@@ -20,18 +21,29 @@ if(!params.has('nosettings')){
     set('number','absence_timeout','10',{min:10,max:300,step:1});set('number','installation_height','1700',{min:0,max:65535,step:1});
     for(const key of ['ai_high_precision','ai_adaptive_sensitivity','ai_entry_exit_recognition','ai_interference_recognition','human_count_enabled'])set('switch',key,'off');
     set('button','spatial_learning','unknown');set('button','refresh_configuration','unknown');set('sensor','learning_result_time','2026-09-30T09:27:37.721Z');
+    if(!old)set('number','map_rotation',params.get('rotation')??'0',{min:-180,max:180,step:1});
 }
 // Simulated converter: three masks of 20 rows x 16 cols of 50 cm cells (x -400..400, y 0..1000), columns right to left.
 // Like the real converter, each edit reads the mask, waits for the radio, then writes it back,
 // and Home Assistant's service call returns before that work finishes.
 const AREAS=['interference','entry_exit','edge'],types=params.has('noblocks')?[]:old?['interference']:AREAS;
 const masks=Object.fromEntries(AREAS.map(t=>[t,new Uint8Array(40)]));
-const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,keepTargets:false,calls:[]};
+const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,keepTargets:false,calls:[],shapes:[]};
 const maskHex=t=>[...masks[t]].map(b=>b.toString(16).padStart(2,'0')).join('');
 function cellBits(r){
     const r0=Math.max(0,Math.floor(r.y_min/50)),r1=Math.min(19,Math.ceil(r.y_max/50)-1);
     const c0=Math.max(0,8-Math.ceil(r.x_max/50)),c1=Math.min(15,7-Math.floor(r.x_min/50));
     const bits=[];for(let row=r0;row<=r1;row++)for(let col=c0;col<=c1;col++)bits.push(row*16+col);return bits;
+}
+// A turned shape covers the cells whose centre is inside it (written separately from the card's version on purpose).
+function shapeBits(points){
+    const bits=[];
+    for(let row=0;row<20;row++)for(let col=0;col<16;col++){
+        const cx=400-col*50-25,cy=row*50+25;let crossings=0;
+        points.forEach((a,i)=>{const b=points[(i+1)%points.length];if((a[1]>cy)!==(b[1]>cy)&&cx<a[0]+(b[0]-a[0])*(cy-a[1])/(b[1]-a[1]))crossings++;});
+        if(crossings%2)bits.push(row*16+col);
+    }
+    return bits;
 }
 for(const t of types){set('sensor',`${t}_mask_hex`,maskHex(t));for(const k of ['zone_add','zone_remove','clear'])set('text',`${t}_${k}`,'unknown');}
 async function convert(type,op,value){
@@ -39,7 +51,7 @@ async function convert(type,op,value){
     await sleep(sim.latency);
     if(sim.fail)return;
     if(op==='clear')read.fill(0);
-    else for(const b of cellBits(JSON.parse(value))){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}
+    else {const shape=JSON.parse(value);sim.shapes.push(shape);for(const b of shape.points?shapeBits(shape.points):cellBits(shape)){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}}
     masks[type].set(read);set('sensor',`${type}_mask_hex`,maskHex(type));card.hass={...hass};
 }
 const hass={states,user:{is_admin:false},callService:async(domain,service,data)=>{
@@ -55,7 +67,8 @@ const hass={states,user:{is_admin:false},callService:async(domain,service,data)=
     else if(domain==='button'){states[id]={...states[id],state:new Date().toISOString()};if(key==='spatial_learning')sleep(sim.latency*3).then(()=>{set('sensor','learning_result_time',new Date().toISOString());card.hass={...hass};});}
     else later(()=>{states[id]={state:data.value,attributes:{}};});
 }};
-card.setConfig(params.has('auto')?{}:{device});
-function update(){set('sensor','tracking_last_update',new Date().toISOString());card.hass={...hass};}
+if(params.has('offline'))for(const id of Object.keys(states))states[id]={state:'unavailable',attributes:states[id].attributes};
+card.setConfig(params.has('auto')?{}:{device:params.get('device')??device});
+function update(){if(!params.has('offline'))set('sensor','tracking_last_update',new Date().toISOString());card.hass={...hass};}
 update();setInterval(update,Number(params.get('tick')??3000));
 </script></body></html>

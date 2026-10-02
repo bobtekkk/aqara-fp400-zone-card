@@ -201,6 +201,26 @@ export function worldToGrid(rect) {
     }
     return grid;
 }
+// A shape drawn on a turned map arrives as corner points (cm). It covers the cells whose centre lies inside it.
+// Must match polygonBits in the card (a test checks this).
+export function polygonCells(points) {
+    if (!Array.isArray(points) || points.length < 3 || points.length > 16 ||
+        !points.every(p => Array.isArray(p) && p.length === 2 && p.every(v => Number.isFinite(v) && Math.abs(v) <= 2000))) {
+        throw new Error('points must be 3..16 [x, y] pairs in centimetres');
+    }
+    const bits = [];
+    for (let bit = 0; bit < 320; bit++) {
+        const x = 375 - (bit & 15) * 50, y = (bit >> 4) * 50 + 25;
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+            const [xi, yi] = points[i], [xj, yj] = points[j];
+            if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+        }
+        if (inside) bits.push(bit);
+    }
+    if (!bits.length) throw new Error('Shape is outside the sensor grid (x -400..400 cm, y 0..1000 cm)');
+    return bits;
+}
 // Region masks and software zones are edited read-modify-write; overlapping edits would overwrite each other.
 const deviceLocks = new Map();
 function withDeviceLock(device, task) {
@@ -273,9 +293,14 @@ async function writeRegion(device, id, change) {
         return {state};
     });
 }
-function setCells(mask, {row_start, row_end, column_start, column_end}, on) {
-    for (let row = row_start; row <= row_end; row++) for (let col = column_start; col <= column_end; col++) {
-        const bit = row * 16 + col, flag = 0x80 >> (bit % 8);
+function gridBits({row_start, row_end, column_start, column_end}) {
+    const bits = [];
+    for (let row = row_start; row <= row_end; row++) for (let col = column_start; col <= column_end; col++) bits.push(row * 16 + col);
+    return bits;
+}
+function setCells(mask, bits, on) {
+    for (const bit of bits) {
+        const flag = 0x80 >> (bit % 8);
         if (on) mask[bit >> 3] |= flag;
         else mask[bit >> 3] &= ~flag;
     }
@@ -295,7 +320,7 @@ const fp400RegionControl = {
         }
         const selected = value.operation === 'add';
         return writeRegion(meta.device, regionAttributes[region],
-            mask => setCells(mask, {row_start: r0, row_end: r1, column_start: c0, column_end: c1}, region === 'monitoring_region' ? !selected : selected));
+            mask => setCells(mask, gridBits({row_start: r0, row_end: r1, column_start: c0, column_end: c1}), region === 'monitoring_region' ? !selected : selected));
     },
 };
 // World-coordinate (cm) editors for the three native area masks. A set bit marks the cell:
@@ -316,8 +341,9 @@ const fp400AreaControl = {
             if (value !== 'confirm') throw new Error(`Send 'confirm' to clear every ${area} cell`);
             return writeRegion(meta.device, areaRegions[area], () => Buffer.alloc(40));
         }
-        const rectangle = worldToGrid(typeof value === 'string' ? JSON.parse(value) : value);
-        return writeRegion(meta.device, areaRegions[area], mask => setCells(mask, rectangle, key.endsWith('_add')));
+        const shape = typeof value === 'string' ? JSON.parse(value) : value;
+        const bits = shape?.points ? polygonCells(shape.points) : gridBits(worldToGrid(shape));
+        return writeRegion(meta.device, areaRegions[area], mask => setCells(mask, bits, key.endsWith('_add')));
     },
 };
 async function refreshFp400Configuration(endpoint) {
@@ -367,9 +393,9 @@ const fp400AdditionalExposes = [
         edge: 'Outside the room: the sensor does not monitor these cells (behind a wall, a window, the next room).',
     }).flatMap(([area, purpose]) => [
         e.text(`${area}_zone_add`, ea.SET).withCategory('config')
-            .withDescription(`${purpose} Adds a rectangle in centimetres, e.g. {"x_min":-100,"x_max":100,"y_min":50,"y_max":250}.`),
+            .withDescription(`${purpose} Adds a rectangle in centimetres, e.g. {"x_min":-100,"x_max":100,"y_min":50,"y_max":250}, or a turned shape as {"points":[[x,y],...]}.`),
         e.text(`${area}_zone_remove`, ea.SET).withCategory('config')
-            .withDescription(`${purpose} Removes the cells inside a rectangle (same JSON).`),
+            .withDescription(`${purpose} Removes the cells inside a rectangle or shape (same JSON).`),
         e.text(`${area}_clear`, ea.SET).withCategory('config').withDescription(`${purpose} Send 'confirm' to clear every cell.`),
         e.text(`${area}_mask_hex`, ea.STATE_GET).withCategory('diagnostic')
             .withDescription('Raw cell mask, 80 hex characters (20 rows × 16 columns). Used by the zone card to draw the cells.'),
@@ -509,7 +535,20 @@ export function parseSoftwareZone(value) {
     }
     if (zone.x_min >= zone.x_max || zone.y_min >= zone.y_max) throw new Error('Zone minimum must be smaller than maximum');
     if (!Number.isInteger(zone.absence_timeout) || zone.absence_timeout < 0 || zone.absence_timeout > 300) throw new Error('Zone absence timeout must be 0..300 seconds');
+    // A zone drawn on a turned map keeps that turn: its rectangle is in a frame rotated by `rotation` degrees.
+    const rotation = value.rotation ?? 0;
+    if (!Number.isFinite(rotation) || Math.abs(rotation) > 180) throw new Error('Zone rotation must be -180..180 degrees');
+    if (rotation) zone.rotation = rotation;
     return zone;
+}
+// Is a target inside a zone? Turned zones look at the target from their own frame.
+export function inZone(t, z) {
+    let {x, y} = t;
+    if (z.rotation) {
+        const a = -z.rotation * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+        [x, y] = [x * c - y * s, x * s + y * c];
+    }
+    return x >= z.x_min && x < z.x_max && y >= z.y_min && y < z.y_max;
 }
 export class SoftwareZoneTracker {
     constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.awaiting=new Set();this.invalid=false;}
@@ -525,15 +564,15 @@ export class SoftwareZoneTracker {
         for (const t of targets) this.lastSeen.set(t.id,{...t,at:now});
         const all=[...targets,...carried],events=[];
         for (const [id,z] of Object.entries(this.zones)) {
-            const inZone=all.filter(t=>t.x>=z.x_min && t.x<z.x_max && t.y>=z.y_min && t.y<z.y_max);
-            if (inZone.length) {this.occupied[id]=true;delete this.outsideSince[id];}
+            const inside=all.filter(t=>inZone(t,z));
+            if (inside.length) {this.occupied[id]=true;delete this.outsideSince[id];}
             else if (!unaccounted && this.outsideSince[id]===undefined) this.outsideSince[id]=now;
-            const ids=new Set(inZone.map(t=>t.id)), before=this.inside[id];
+            const ids=new Set(inside.map(t=>t.id)), before=this.inside[id];
             if (before && !this.awaiting.has(Number(id))) {
                 for (const t of ids) if (!before.ids.has(t)) events.push({zone:Number(id),type:'enter'});
                 for (const t of before.ids) if (!ids.has(t)) events.push({zone:Number(id),type:'leave'});
             }
-            this.inside[id]={ids,moving:inZone.some(t=>t.activity===1)};
+            this.inside[id]={ids,moving:inside.some(t=>t.activity===1)};
         }
         this.awaiting.clear();
         return events;
@@ -617,7 +656,20 @@ const softwareZoneHeartbeat={
     cluster:'aqaraFp400Radar',type:['attributeReport','readResponse'],
     convert:(model,msg,publish)=>{
         if(msg.endpoint.ID!==1)return;
-        return zoneState(softwareContext(msg.device,publish));
+        return {...zoneState(softwareContext(msg.device,publish)), map_rotation:msg.device.meta.fp400MapRotation ?? 0};
+    },
+};
+// Only the card uses this: it turns its map so a room seen from a corner looks square. Zones keep their own rotation.
+const fp400MapRotation={
+    key:['map_rotation'],
+    convertGet:async(entity,key,meta)=>{meta.publish({map_rotation:meta.device.meta.fp400MapRotation ?? 0});},
+    convertSet:async(entity,key,value,meta)=>{
+        const rotation=Number(value);
+        if(!Number.isFinite(rotation) || Math.abs(rotation)>180) throw new Error('Map rotation must be -180..180 degrees');
+        const previous=meta.device.meta.fp400MapRotation;
+        meta.device.meta.fp400MapRotation=rotation;
+        try {await meta.device.save();} catch(error) {meta.device.meta.fp400MapRotation=previous;throw error;}
+        return {state:{map_rotation:rotation}};
     },
 };
 const softwareZoneExposes=Array.from({length:8},(_,i)=>{
@@ -685,6 +737,8 @@ const fp400RemoveTarget = {
 const fp400TrackingExposes = [
     e.action([...motionEvents, ...Array.from({length: 8}, (_, i) => [`software_zone_${i + 1}_enter`, `software_zone_${i + 1}_leave`]).flat()])
         .withDescription('Movement events from the sensor (enter, leave, approach, away, and left/right in/out in left_right mode) and software zone enter/leave'),
+    e.numeric('map_rotation', ea.ALL).withUnit('°').withValueMin(-180).withValueMax(180).withValueStep(1).withCategory('config')
+        .withDescription('How far the zone card turns its map, so a room seen from a corner looks square. Zones keep their own rotation.'),
     e.text('remove_target', ea.SET).withCategory('config')
         .withDescription('Make the sensor forget one tracked target by its id from targets_xy, for example a ghost. Real people are detected again.'),
     e.text('motion_last_frame', ea.STATE).withCategory('diagnostic').withDescription('Latest raw FC0B movement event, hex'),
@@ -714,7 +768,7 @@ export default {
         aqaraActivityState,
         {...aqaraActivityState, cluster: '64524'},
     ],
-    toZigbee: [softwareZoneControl, fp400RemoveTarget, fp400ZoneSettingsControl, fp400CapacityGet,
+    toZigbee: [softwareZoneControl, fp400MapRotation, fp400RemoveTarget, fp400ZoneSettingsControl, fp400CapacityGet,
         ...fp400InstallationControl.key.map(key => ({...fp400InstallationControl, key: [key]})),
         ...fp400RegionControl.key.map(key => ({...fp400RegionControl, key: [key]})),
         ...fp400RegionGet.key.map(key => ({...fp400RegionGet, key: [key]})),

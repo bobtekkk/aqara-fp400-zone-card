@@ -1,5 +1,5 @@
 /* Aqara FP400 zone card for Home Assistant + Zigbee2MQTT. https://github.com/bobtekkk/aqara-fp400-zone-card (MIT License) */
-const VERSION = '0.2.1';
+const VERSION = '0.3.0';
 const COLORS = ['#67e4b8','#9fa9ff','#f9bf73','#f28fad','#68cce8','#d6a0ef','#bddb79','#ff9d7a'];
 const LIMITS = {x_min:-400,x_max:400,y_min:-50,y_max:1000};
 // The sensor's own area masks, in sidebar order. The map draws them in reverse, so ignore spots end up on top.
@@ -8,12 +8,12 @@ export const AREAS = {
     entry_exit:{label:'Doorway',color:'#ffd166',hint:'Where people walk in and out. The sensor picks people up and lets them go faster here.'},
     edge:{label:'Outside room',color:'#8fa1ad',hint:'Behind a wall, a window or in the next room. The sensor stops watching these cells.'},
 };
-// Sensor settings, shown when the converter provides them: [domain, key, label, select options or number unit, number scale].
+// Sensor settings, shown when the converter provides them: [domain, key, label, select options or {unit, scale, min, hint}].
 // They apply right away, like in the Aqara app.
 const SETTINGS = [
     ['Detection',[
         ['select','presence_sensitivity','Sensitivity',{low:'Low',medium:'Medium',high:'High'}],
-        ['number','absence_timeout','Empty after','s'],
+        ['number','absence_timeout','Empty after',{unit:'s'}],
         ['select','proximity_distance','Approach distance',{far:'Far',medium:'Medium',near:'Near'}],
         ['select','detection_direction','Movement events',{omnidirectional:'Any direction',left_right:'Left and right'}],
     ]],
@@ -27,8 +27,9 @@ const SETTINGS = [
     ['Mounting',[
         ['select','installation_mode','Mounted on',{wall:'Wall',ceiling:'Ceiling'}],
         ['select','side_installation','Wall position',{wall:'Flat on the wall',left_corner:'Left corner',right_corner:'Right corner'}],
-        ['number','installation_height','Height','cm',10],
+        ['number','installation_height','Height',{unit:'cm',scale:10,min:1}],
         ['select','coordinate_reverse','Swap left and right',{disabled:'No',enabled:'Yes',auto:'Automatic'}],
+        ['number','map_rotation','Turn the map',{unit:'°',hint:'Sensor in a corner? Try 45 or -45 so the room looks square on the map.'}],
     ]],
 ];
 // What the card names a zone's entities in Home Assistant, e.g. "Desk occupancy".
@@ -36,6 +37,19 @@ const ENTITY_NAMES = [['binary_sensor','occupancy','occupancy','occupancy'],['bi
 const escapeHTML = value => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clone = value => value == null ? null : {...value};
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+// Turn a point counter-clockwise by deg degrees around the sensor (x to the right, y away from the sensor).
+export function turn(p,deg){
+    if(!deg)return {x:p.x,y:p.y};
+    const c=Math.cos(deg*Math.PI/180),s=Math.sin(deg*Math.PI/180);
+    return {x:p.x*c-p.y*s,y:p.x*s+p.y*c};
+}
+// The box around the sensor's range, seen from a frame turned by deg (the map, or a zone drawn on a turned map).
+export function rangeBox(deg){
+    if(!deg)return {...LIMITS};
+    const p=[[LIMITS.x_min,LIMITS.y_min],[LIMITS.x_max,LIMITS.y_min],[LIMITS.x_max,LIMITS.y_max],[LIMITS.x_min,LIMITS.y_max]].map(([x,y])=>turn({x,y},-deg));
+    const lo=v=>Math.floor(v+1e-6),hi=v=>Math.ceil(v-1e-6); // whole centimetres, ignoring rounding noise
+    return {x_min:lo(Math.min(...p.map(q=>q.x))),x_max:hi(Math.max(...p.map(q=>q.x))),y_min:lo(Math.min(...p.map(q=>q.y))),y_max:hi(Math.max(...p.map(q=>q.y)))};
+}
 // Live data re-renders many times a second; replacing unchanged nodes under the pointer swallows clicks.
 const setHtml = (el,html) => {if(el._html!==html){el._html=html;el.innerHTML=html;}};
 export function normalizeZone(value) {
@@ -47,20 +61,23 @@ export function normalizeZone(value) {
     for(const k of ['x_min','x_max','y_min','y_max'])if(!Number.isFinite(z[k]) || Math.abs(z[k])>2000)throw new Error('Use valid zone dimensions.');
     if(z.x_max<=z.x_min || z.y_max<=z.y_min)throw new Error('Width and depth must be greater than zero.');
     if(!Number.isInteger(z.absence_timeout) || z.absence_timeout<0 || z.absence_timeout>300)throw new Error('Empty delay must be 0–300 seconds.');
+    const rotation=value.rotation??0;
+    if(!Number.isFinite(rotation) || Math.abs(rotation)>180)throw new Error('Zone rotation must be -180 to 180 degrees.');
+    if(rotation)z.rotation=rotation;
     return z;
 }
 const sameZone=(a,b)=>JSON.stringify(normalizeZone(a))===JSON.stringify(normalizeZone(b));
-export function rectangleFromPoints(a,b,step=50) {
+export function rectangleFromPoints(a,b,step=50,box=LIMITS) {
     const snap=v=>step?Math.round(v/step)*step:v;
-    const ax=clamp(snap(a.x),LIMITS.x_min,LIMITS.x_max),bx=clamp(snap(b.x),LIMITS.x_min,LIMITS.x_max);
-    const ay=clamp(snap(a.y),LIMITS.y_min,LIMITS.y_max),by=clamp(snap(b.y),LIMITS.y_min,LIMITS.y_max);
+    const ax=clamp(snap(a.x),box.x_min,box.x_max),bx=clamp(snap(b.x),box.x_min,box.x_max);
+    const ay=clamp(snap(a.y),box.y_min,box.y_max),by=clamp(snap(b.y),box.y_min,box.y_max);
     return {x_min:Math.min(ax,bx),x_max:Math.max(ax,bx),y_min:Math.min(ay,by),y_max:Math.max(ay,by)};
 }
-export function moveRectangle(zone,dx,dy,step=50) {
+export function moveRectangle(zone,dx,dy,step=50,box=LIMITS) {
     const snap=v=>step?Math.round(v/step)*step:v;
     // Keep zones on the map, but never push one that is already outside further out (or make it jump in).
-    dx=clamp(snap(dx),Math.min(0,LIMITS.x_min-zone.x_min),Math.max(0,LIMITS.x_max-zone.x_max));
-    dy=clamp(snap(dy),Math.min(0,LIMITS.y_min-zone.y_min),Math.max(0,LIMITS.y_max-zone.y_max));
+    dx=clamp(snap(dx),Math.min(0,box.x_min-zone.x_min),Math.max(0,box.x_max-zone.x_max));
+    dy=clamp(snap(dy),Math.min(0,box.y_min-zone.y_min),Math.max(0,box.y_max-zone.y_max));
     return {...zone,x_min:zone.x_min+dx,x_max:zone.x_max+dx,y_min:zone.y_min+dy,y_max:zone.y_max+dy};
 }
 export function parseTargets(value) {
@@ -70,12 +87,13 @@ export function parseTargets(value) {
         return parts.length===3 && parts.every(Number.isFinite)?[{id:parts[0],x:parts[1],y:parts[2]}]:[];
     });
 }
-export function fitView(zones,targets=[]) {
-    const points=Object.values(zones).filter(Boolean).flatMap(z=>[{x:z.x_min,y:z.y_min},{x:z.x_max,y:z.y_max}]);
-    points.push(...targets,{x:0,y:0});
-    if(points.length===1)return {x:-300,y:-50,width:600,height:600};
-    const x1=clamp(Math.min(...points.map(p=>p.x))-90,-400,200), x2=clamp(Math.max(...points.map(p=>p.x))+90,-200,400);
-    const y1=clamp(Math.min(...points.map(p=>p.y))-60,-50,800), y2=clamp(Math.max(...points.map(p=>p.y))+100,150,1000);
+// A view (map coordinates) around the given points and the sensor, inside the range of a map turned by deg.
+export function fitView(points,deg=0) {
+    const box=rangeBox(deg);
+    points=[...points,{x:0,y:0}];
+    if(points.length===1)return deg?{x:box.x_min,y:box.y_min,width:box.x_max-box.x_min,height:box.y_max-box.y_min}:{x:-300,y:-50,width:600,height:600};
+    const x1=clamp(Math.min(...points.map(p=>p.x))-90,box.x_min,box.x_max-200), x2=clamp(Math.max(...points.map(p=>p.x))+90,box.x_min+200,box.x_max);
+    const y1=clamp(Math.min(...points.map(p=>p.y))-60,box.y_min,box.y_max-200), y2=clamp(Math.max(...points.map(p=>p.y))+100,box.y_min+200,box.y_max);
     return {x:x1,y:y1,width:Math.max(300,x2-x1),height:Math.max(300,y2-y1)};
 }
 // The sensor's area masks: 20 rows x 16 columns of 50 cm cells covering x -400..400, y 0..1000.
@@ -93,17 +111,39 @@ export function maskBits(hex){
     for(let bit=0;bit<320;bit++)if(parseInt(hex.substr((bit>>3)*2,2),16)&(0x80>>(bit%8)))bits.add(bit);
     return bits;
 }
-// What a mask will hold after Save: an optional clear, then each painted (add) or erased (remove) rectangle in order.
+// A shape painted on a turned map covers the cells whose centre lies inside it.
+// Must match polygonCells in z2m/aqara-fp400.mjs (a test checks this).
+export function polygonBits(points){
+    const bits=[];
+    for(let bit=0;bit<320;bit++){
+        const x=375-(bit&15)*50,y=(bit>>4)*50+25;let inside=false;
+        for(let i=0,j=points.length-1;i<points.length;j=i++){
+            const [xi,yi]=points[i],[xj,yj]=points[j];
+            if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)inside=!inside;
+        }
+        if(inside)bits.push(bit);
+    }
+    return bits;
+}
+// The corners of an area edit in the sensor's frame, as sent to the converter.
+export function opPoints(op){
+    const r=op.rect;
+    return [[r.x_min,r.y_min],[r.x_max,r.y_min],[r.x_max,r.y_max],[r.x_min,r.y_max]].map(([x,y])=>{const p=turn({x,y},op.rotation??0);return [Math.round(p.x*10)/10||0,Math.round(p.y*10)/10||0];});
+}
+export const opBits=op=>op.rotation?polygonBits(opPoints(op)):rectBits(op.rect);
+// What a mask will hold after Save: an optional clear, then each painted (add) or erased (remove) shape in order.
 export function draftMask(saved,clear=false,ops=[]){
     const bits=new Set(clear?[]:saved??[]);
-    for(const {op,rect} of ops)for(const bit of rectBits(rect))op==='remove'?bits.delete(bit):bits.add(bit);
+    for(const op of ops)for(const bit of opBits(op))op.op==='remove'?bits.delete(bit):bits.add(bit);
     return bits;
 }
 // Entity IDs look like text.<device>_software_zone_1_config; <device> is the FP400's friendly name in Zigbee2MQTT.
-export function findDevice(hass){
-    for(const id of Object.keys(hass?.states??{})){const m=/^text\.([a-z0-9_]+)_software_zone_1_config$/.exec(id);if(m)return m[1];}
-    return null;
+export function findDevices(hass){
+    const found=[];
+    for(const id of Object.keys(hass?.states??{})){const m=/^text\.([a-z0-9_]+)_software_zone_1_config$/.exec(id);if(m)found.push(m[1]);}
+    return found;
 }
+export const findDevice=hass=>findDevices(hass)[0]??null;
 export function clampBlock(r){
     const c={x_min:Math.max(-400,r.x_min),x_max:Math.min(400,r.x_max),y_min:Math.max(0,r.y_min),y_max:Math.min(1000,r.y_max)};
     return c.x_max-c.x_min>=50&&c.y_max-c.y_min>=50?c:null;
@@ -122,22 +162,37 @@ header{padding:16px 24px 14px;display:flex;justify-content:space-between;align-i
 export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     constructor(){
         super();this.attachShadow({mode:'open'});this.saved={};this.drafts={};this.base={};this.dirty=new Set();this.loaded=new Set();this.selected=null;this.mode='select';this.snap=50;this.view={x:-300,y:-50,width:600,height:600};this.saving=false;
-        this.panel='zones';this.areaType='interference';this.areaTool='add';this.pendingAreas=[];this.pendingClears=new Set();this.target=null;this.targetAt=null;this.forgetting=null;this.busy={};this.uid=`fp${Math.random().toString(36).slice(2)}`;
+        this.panel='zones';this.areaType='interference';this.areaTool='add';this.pendingAreas=[];this.pendingClears=new Set();this.target=null;this.targetAt=null;this.forgetting=null;this.busy={};this.rotation=0;this.loadingGrace=15000;this.uid=`fp${Math.random().toString(36).slice(2)}`;
     }
-    static getStubConfig(hass){const device=findDevice(hass);return device?{device}:{};}
+    // No device in the stub: the card finds the FP400 itself, so renaming the sensor later cannot break it.
+    static getStubConfig(){return {};}
     setConfig(config){
         const device=config.device==null||config.device===''?null:String(config.device).toLowerCase();
         if(device!==null&&!/^[a-z0-9_]+$/.test(device))throw new Error('device must be the start of your FP400 entity IDs, for example living_room_fp400 or 0x54ef440000000001.');
-        this.config={...config,device};this.resolved=device??findDevice(this._hass);this.watchedFor=null;if(!this.mounted)this.mount();if(this._hass)this.sync();
+        this.config={...config,device};this.resolvedAt=0;this.resolveDevice();this.watchedFor=null;if(!this.mounted)this.mount();if(this._hass)this.sync();
     }
-    // Without a configured device, use the first FP400 the converter has created entities for.
     get device(){return this.resolved??this.config?.device;}
+    // Use the configured FP400, else the first one the converter made entities for. A configured one that Home Assistant
+    // doesn't have (renamed sensor) is replaced by the only other FP400, and the card says so.
+    resolveDevice(){
+        const wanted=this.config?.device??null,before=this.resolved;
+        if(!this._hass?.states){this.resolved=wanted;return;}
+        const found=findDevices(this._hass);this.resolvedAt=Date.now();
+        const missing=Boolean(wanted)&&found.length>0&&!found.includes(wanted);
+        this.resolved=missing&&found.length===1?found[0]:wanted??found[0]??null;
+        this.deviceNote=!missing?null:found.length===1
+            ?`This card is set to device: ${wanted}, which Home Assistant doesn't have (was the sensor renamed?). Showing ${found[0]} instead. Remove device: from the card, or change it.`
+            :`This card is set to device: ${wanted}, which Home Assistant doesn't have (was the sensor renamed?). Change device: to one of: ${found.join(', ')}.`;
+        if(before&&this.resolved!==before){this.saved={};this.drafts={};this.base={};this.dirty.clear();this.loaded.clear();this.firstFit=false;this.startedAt=null;}
+        if(this.deviceNote)this.notice(this.deviceNote,'error');
+    }
     getCardSize(){return 12;}
     getGridOptions(){return {columns:'full',min_columns:12};}
     // Home Assistant hands over a new hass object for every entity change in the house; only ours matter.
     set hass(value){
         this._hass=value;if(!this.config)return;
-        this.resolved??=findDevice(value);
+        // Look again if our FP400's entities are missing, at most every 5 s: scanning every entity is not free.
+        if((!this.resolved||value.states?.[`text.${this.resolved}_software_zone_1_config`]===undefined)&&Date.now()-(this.resolvedAt??0)>5000)this.resolveDevice();
         const device=this.device;
         if(!device){this.notice('No FP400 found. Install the Zigbee2MQTT converter (see the README) or set device: in the card.','error');return;}
         if(this.watchedFor!==device){this.watchedFor=device;this.watched=this.watchedEntities();this.seen=null;}
@@ -163,7 +218,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         this.shadowRoot.innerHTML=`<style>${STYLE}</style><ha-card>
 <header><div><div class="eyebrow">AQARA FP400 · SPATIAL CONTROL</div><h1>Room zones</h1><div class="subtitle">Draw your room. Give every space its own presence sensor.</div></div><div class="header-actions"><div class="live" id="live"><i></i><span>Connecting</span></div><button class="btn" data-action="settings" aria-label="Sensor settings">⚙<span class="label"> Settings</span></button></div></header>
 <div class="main"><section class="canvas-panel"><div class="toolbar"><div class="toolbar-group"><button class="btn" data-action="draw">＋ Draw zone</button><button class="btn" data-action="areas">▦ Areas</button></div><div class="toolbar-group"><label><span class="shortcut">Snap </span><select class="snap-select" id="snap" aria-label="Grid snap"><option value="50">0.5 m grid</option><option value="10">0.1 m grid</option><option value="0">Free draw</option></select></label><button class="btn icon" data-action="zoom-in" aria-label="Zoom in">＋</button><button class="btn icon" data-action="zoom-out" aria-label="Zoom out">−</button><button class="btn" data-action="fit">Fit</button></div></div>
-<div class="map-wrap"><div class="map-canvas"><svg class="map" tabindex="0" aria-label="Room map. Drag empty space to pan, wheel to zoom, drag a zone to move it, drag corners to resize, click a dot to inspect a target." role="img"><defs><pattern id="${this.uid}-small" width="50" height="50" patternUnits="userSpaceOnUse"><path d="M 50 0 L 0 0 0 50" fill="none" stroke="#2a3c48" stroke-width=".6" vector-effect="non-scaling-stroke"/></pattern><pattern id="${this.uid}-large" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#${this.uid}-small)"/><path d="M 100 0 L 0 0 0 100" fill="none" stroke="#38505c" stroke-width=".7" vector-effect="non-scaling-stroke"/></pattern>${Object.entries(AREAS).map(([type,a])=>areaPattern(this.uid,type,a.color)).join('')}</defs><rect x="-2000" y="-2000" width="4000" height="4000" fill="#101d27"/><rect x="-400" y="-1000" width="800" height="1050" fill="url(#${this.uid}-large)"/><path d="M 0 0 L -400 -700 M 0 0 L 400 -700" stroke="#67e4b819" fill="none" stroke-dasharray="5 7" vector-effect="non-scaling-stroke"/><g id="areas"></g><g id="zones"></g><g id="sensor"></g><g id="targets"></g><g id="pending-areas"></g></svg></div><div class="ruler-y" id="ruler-y"></div><div class="ruler-x" id="ruler-x"></div><div class="ruler-corner"></div></div>
+<div class="map-wrap"><div class="map-canvas"><svg class="map" tabindex="0" aria-label="Room map. Drag empty space to pan, wheel to zoom, drag a zone to move it, drag corners to resize, click a dot to inspect a target." role="img"><defs><pattern id="${this.uid}-small" width="50" height="50" patternUnits="userSpaceOnUse"><path d="M 50 0 L 0 0 0 50" fill="none" stroke="#2a3c48" stroke-width=".6" vector-effect="non-scaling-stroke"/></pattern><pattern id="${this.uid}-large" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#${this.uid}-small)"/><path d="M 100 0 L 0 0 0 100" fill="none" stroke="#38505c" stroke-width=".7" vector-effect="non-scaling-stroke"/></pattern>${Object.entries(AREAS).map(([type,a])=>areaPattern(this.uid,type,a.color)).join('')}<clipPath id="${this.uid}-range"><rect id="range" x="-400" y="-1000" width="800" height="1050"/></clipPath></defs><rect x="-3000" y="-3000" width="6000" height="6000" fill="#101d27"/><rect x="-3000" y="-3000" width="6000" height="6000" fill="url(#${this.uid}-large)" clip-path="url(#${this.uid}-range)"/><g id="sensor-frame"><rect id="range-outline" x="-400" y="-1000" width="800" height="1050" fill="none" stroke="#4b6472" stroke-dasharray="4 6" vector-effect="non-scaling-stroke" visibility="hidden"/><path d="M 0 0 L -400 -700 M 0 0 L 400 -700" stroke="#67e4b819" fill="none" stroke-dasharray="5 7" vector-effect="non-scaling-stroke"/><g id="areas"></g></g><g id="zones"></g><g id="sensor"></g><g id="targets"></g><g id="pending-areas"></g></svg></div><div class="ruler-y" id="ruler-y"></div><div class="ruler-x" id="ruler-x"></div><div class="ruler-corner"></div></div>
 <div class="legend"><span><i></i>Live target positions</span><span id="map-hint">Drag the grid to pan · wheel to zoom · click a zone to select</span><span class="shortcut">Arrow keys nudge · Esc cancels</span></div></section>
 <aside class="sidebar"><section><h2 class="section-title">YOUR ZONES <span id="zone-count">0 / 8</span></h2><div class="zone-list" id="zone-list"></div></section><section class="inspector" id="inspector"></section><section class="settings" id="settings"></section></aside></div>
 <footer class="footer"><div class="message" id="message" role="status" aria-live="polite">Loading your saved zones…</div><div class="footer-actions"><button class="btn" data-action="discard" disabled>Discard</button><button class="btn primary" data-action="save" disabled>Save zones</button></div></footer></ha-card>`;
@@ -179,7 +234,10 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         this.render();
     }
     sync(){
-        let changed=false;
+        let changed=false;this.startedAt??=Date.now();
+        // The map turn is kept with the sensor (converter 0.3+), so every dashboard shows the room the same way.
+        const turned=Number(this.state('number','map_rotation')),rotation=Number.isFinite(turned)&&Math.abs(turned)<=180?turned:0;
+        if(rotation!==this.rotation){this.rotation=rotation;if(this.firstFit)this.view=fitView(this.mapPoints(),rotation);changed=true;}
         for(let id=1;id<=8;id++){
             const raw=this.state('text',`software_zone_${id}_config`);
             if(raw===undefined || ['unknown','unavailable'].includes(raw))continue;
@@ -197,7 +255,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             }
         }
         if(!this.firstFit && this.loaded.size===8){
-            this.firstFit=true;this.view=fitView(this.drafts);this.selected=Number(Object.keys(this.drafts).find(id=>this.drafts[id]))||null;changed=true;this.notice('All changes are saved.');
+            this.firstFit=true;this.lastProblem=null;this.view=fitView(this.mapPoints(),this.rotation);this.selected=Number(Object.keys(this.drafts).find(id=>this.drafts[id]))||null;changed=true;this.notice(this.deviceNote??'All changes are saved.',this.deviceNote?'error':'');
             // Zones saved before their entities existed (e.g. the people count) still get named after the zone.
             for(const [id,z] of Object.entries(this.saved))if(z)this.nameEntities(Number(id),z,z);
         }
@@ -237,14 +295,23 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         }
         else if(action==='ignore-target')this.ignoreSpot();
         else if(action==='close-target')this.target=null;
-        else if(action==='fit'){
-            // Outside-room cells are not part of the room, so they do not widen the view.
-            const cells=['interference','entry_exit'].flatMap(t=>[...this.draftBits(t)].map(cellOf));
-            this.view=fitView([...Object.values(this.drafts),...this.pendingAreas.filter(o=>o.type!=='edge'&&o.op==='add').map(o=>o.rect),...cells],this.fresh()?this.targets():[]);
-        }
+        else if(action==='fit')this.view=fitView(this.mapPoints(),this.rotation);
         else if(action==='zoom-in'||action==='zoom-out')this.zoomAt(action==='zoom-in'?.8:1.25);
         else if(action==='delete'&&this.selected){this.mark(this.selected,null);this.notice('Zone marked for removal. Save to apply, or Discard to undo.');}
         this.render();
+    }
+    // Everything worth showing, in map coordinates. Outside-room cells are not part of the room, so they don't widen the view.
+    mapPoints(){
+        const corners=(r,deg)=>[[r.x_min,r.y_min],[r.x_max,r.y_min],[r.x_max,r.y_max],[r.x_min,r.y_max]].map(([x,y])=>turn({x,y},deg-this.rotation));
+        return [...Object.values(this.drafts).filter(Boolean).flatMap(z=>corners(z,z.rotation??0)),
+            ...this.pendingAreas.filter(o=>o.type!=='edge'&&o.op==='add').flatMap(o=>corners(o.rect,o.rotation??0)),
+            ...['interference','entry_exit'].flatMap(t=>[...this.draftBits(t)].flatMap(bit=>corners(cellOf(bit),0))),
+            ...(this.fresh()?this.targets():[]).map(t=>turn(t,-this.rotation))];
+    }
+    // An area drag as it will be saved: trimmed to the sensor grid on a straight map; on a turned map it must cover a cell.
+    areaRect(r){
+        if(!this.rotation)return clampBlock(r);
+        return r.x_max-r.x_min>=50&&r.y_max-r.y_min>=50&&polygonBits(opPoints({rect:r,rotation:this.rotation})).length?r:null;
     }
     areaHelp(){return `Drag on the map to ${this.areaTool==='remove'?'erase':'paint'} ${AREAS[this.areaType].label.toLowerCase()} cells. Click a dashed shape to undo it. Nothing changes until you save.`;}
     cancelAreas(){
@@ -270,7 +337,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             const id=Number(dot.dataset.target),t=this.targets().find(t=>t.id===id);
             event.preventDefault();this.svg.focus({preventScroll:true});this.target=id;this.targetAt=t?{x:t.x,y:t.y}:null;this.selected=null;this.panel='zones';this.render();return;
         }else if(zone){
-            const id=Number(zone.dataset.mapZone);this.selected=id;this.target=null;this.drag={kind:handle?'resize':'move',corner:handle?.dataset.handle,id,start:p,original:clone(this.drafts[id]),pointer:event.pointerId};
+            const id=Number(zone.dataset.mapZone);this.selected=id;this.target=null;this.drag={kind:handle?'resize':'move',corner:handle?.dataset.handle,id,start:p,original:clone(this.drafts[id]),turn:this.rotation-(this.drafts[id].rotation??0),pointer:event.pointerId};
         }else {
             this.drag={kind:'pan',startView:{...this.view},clientStart:{x:event.clientX,y:event.clientY},scale:this.svg.getScreenCTM()?.a||1,moved:false,pointer:event.pointerId};
             this.svg.classList.add('panning');
@@ -283,26 +350,29 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(d.kind==='pan'){
             const dx=(event.clientX-d.clientStart.x)/d.scale,dy=(event.clientY-d.clientStart.y)/d.scale;
             if(Math.abs(event.clientX-d.clientStart.x)+Math.abs(event.clientY-d.clientStart.y)>4)d.moved=true;
-            const w=d.startView.width,h=d.startView.height;
-            this.view={x:clamp(d.startView.x-dx,-400,400-w),y:clamp(d.startView.y+dy,-50,1000-h),width:w,height:h};
+            const w=d.startView.width,h=d.startView.height,box=rangeBox(this.rotation);
+            this.view={x:clamp(d.startView.x-dx,box.x_min,box.x_max-w),y:clamp(d.startView.y+dy,box.y_min,box.y_max-h),width:w,height:h};
             this.renderMap();this.renderLive();return;
         }
         const p=this.point(event);let z;
         if(d.kind==='area-draw'){
             if(Math.abs(event.clientX-d.clientStart.x)+Math.abs(event.clientY-d.clientStart.y)>4)d.moved=true;
-            d.rect=d.moved?clampBlock(rectangleFromPoints(d.start,p,50)):null;
+            d.rect=d.moved?this.areaRect(rectangleFromPoints(d.start,p,50,rangeBox(this.rotation))):null;
             this.renderAreas();return;
         }
         if(d.kind==='draw'){
-            const r=rectangleFromPoints(d.start,p,this.snap);
-            z=r.x_max-r.x_min<10||r.y_max-r.y_min<10?d.original:{name:`Zone ${d.id}`,...r,absence_timeout:3};
-        }else if(d.kind==='move')z=moveRectangle(d.original,p.x-d.start.x,p.y-d.start.y,this.snap);
-        else {
-            z=clone(d.original);const snap=v=>this.snap?Math.round(v/this.snap)*this.snap:v;
-            if(d.corner.includes('w'))z.x_min=clamp(snap(p.x),LIMITS.x_min,z.x_max-10);
-            if(d.corner.includes('e'))z.x_max=clamp(snap(p.x),z.x_min+10,LIMITS.x_max);
-            if(d.corner.includes('n'))z.y_max=clamp(snap(p.y),z.y_min+10,LIMITS.y_max);
-            if(d.corner.includes('s'))z.y_min=clamp(snap(p.y),LIMITS.y_min,z.y_max-10);
+            // A new zone keeps the map's turn, so it stays square with the room.
+            const r=rectangleFromPoints(d.start,p,this.snap,rangeBox(this.rotation));
+            z=r.x_max-r.x_min<10||r.y_max-r.y_min<10?d.original:{name:`Zone ${d.id}`,...r,absence_timeout:3,...(this.rotation?{rotation:this.rotation}:{})};
+        }else if(d.kind==='move'){
+            const a=turn(d.start,d.turn),b=turn(p,d.turn);
+            z=moveRectangle(d.original,b.x-a.x,b.y-a.y,this.snap,rangeBox(d.original.rotation??0));
+        }else {
+            z=clone(d.original);const snap=v=>this.snap?Math.round(v/this.snap)*this.snap:v,q=turn(p,d.turn),box=rangeBox(z.rotation??0);
+            if(d.corner.includes('w'))z.x_min=clamp(snap(q.x),box.x_min,z.x_max-10);
+            if(d.corner.includes('e'))z.x_max=clamp(snap(q.x),z.x_min+10,box.x_max);
+            if(d.corner.includes('n'))z.y_max=clamp(snap(q.y),z.y_min+10,box.y_max);
+            if(d.corner.includes('s'))z.y_min=clamp(snap(q.y),box.y_min,z.y_max-10);
         }
         this.mark(d.id,z);this.renderMap();this.renderButtons();
     }
@@ -312,7 +382,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(this.svg.hasPointerCapture(event.pointerId))this.svg.releasePointerCapture(event.pointerId);
         if(d.kind==='pan'){if(!d.moved&&(this.selected!==null||this.target!==null)){this.selected=null;this.target=null;this.render();}return;}
         if(d.kind==='area-draw'){
-            if(!cancel&&d.rect)this.pendingAreas.push({type:this.areaType,op:this.areaTool,rect:d.rect});
+            if(!cancel&&d.rect)this.pendingAreas.push({type:this.areaType,op:this.areaTool,rect:d.rect,...(this.rotation?{rotation:this.rotation}:{})});
             else if(!cancel&&!d.moved&&d.hit!==null)this.pendingAreas.splice(d.hit,1);
             else {this.render();return;}
             const n=this.pendingAreas.length;
@@ -325,9 +395,9 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     }
     // Zoom keeping world point p (default: view centre) at the same place on screen.
     zoomAt(factor,p){
-        const v=this.view,width=clamp(v.width*factor,180,800),height=clamp(v.height*factor,180,1050);
+        const v=this.view,box=rangeBox(this.rotation),width=clamp(v.width*factor,180,box.x_max-box.x_min),height=clamp(v.height*factor,180,box.y_max-box.y_min);
         p??={x:v.x+v.width/2,y:v.y+v.height/2};
-        this.view={x:clamp(p.x-(p.x-v.x)/v.width*width,-400,400-width),y:clamp(p.y-(p.y-v.y)/v.height*height,-50,1000-height),width,height};
+        this.view={x:clamp(p.x-(p.x-v.x)/v.width*width,box.x_min,box.x_max-width),y:clamp(p.y-(p.y-v.y)/v.height*height,box.y_min,box.y_max-height),width,height};
     }
     wheel(event){
         event.preventDefault();
@@ -350,7 +420,9 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(event.target!==this.svg)return;
         const z=this.drafts[this.selected];if(!z||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
         event.preventDefault();const step=event.shiftKey?10:(this.snap||10);
-        this.mark(this.selected,moveRectangle(z,event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,event.key==='ArrowDown'?-step:event.key==='ArrowUp'?step:0,0));this.render();
+        // Arrows move along the map; a zone drawn on a differently turned map moves in its own frame.
+        const d=turn({x:event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,y:event.key==='ArrowDown'?-step:event.key==='ArrowUp'?step:0},this.rotation-(z.rotation??0));
+        this.mark(this.selected,moveRectangle(z,d.x,d.y,0,rangeBox(z.rotation??0)));this.render();
     }
     editField(event){
         // Use the zone the field was rendered for: clicking another zone selects it before this change event fires.
@@ -367,8 +439,8 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
                 if(field==='y'){z.y_min=Math.round(value*100-h/2);z.y_max=Math.round(value*100+h/2);}
                 if(field==='absence_timeout')z.absence_timeout=value;
             }
-            normalizeZone(z);
-            if(z.x_min<LIMITS.x_min||z.x_max>LIMITS.x_max||z.y_min<LIMITS.y_min||z.y_max>LIMITS.y_max)throw new Error('Keep this rectangle within the displayed 8 × 10 m sensor range.');
+            normalizeZone(z);const box=rangeBox(z.rotation??0);
+            if(z.x_min<box.x_min||z.x_max>box.x_max||z.y_min<box.y_min||z.y_max>box.y_max)throw new Error('Keep this rectangle within the displayed 8 × 10 m sensor range.');
             this.mark(id,z);this.render();
         }catch(error){this.notice(error.message,'error');this.renderInspector();}
     }
@@ -377,14 +449,18 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(!this.mounted)return;
         const v=this.view,scale=v.width/700,fs=12*scale,handle=8*scale;
         this.svg.setAttribute('viewBox',`${v.x} ${-v.y-v.height} ${v.width} ${v.height}`);this.svg.classList.toggle('draw',this.mode==='draw');this.svg.classList.toggle('areas',this.mode==='areas');
+        // The map is drawn square to the room: things in the sensor's own frame are turned onto it (SVG rotate(a) turns by -a).
+        for(const sel of ['#sensor-frame','#range'])this.shadowRoot.querySelector(sel).setAttribute('transform',`rotate(${this.rotation})`);
+        this.shadowRoot.querySelector('#range-outline').setAttribute('visibility',this.rotation?'visible':'hidden'); // on a turned map the grid's edge is hard to see
         const shapes=Object.entries(this.drafts).filter(([,z])=>z).map(([id,z])=>{
             const selected=Number(id)===this.selected,c=COLORS[id-1],dirty=this.dirty.has(Number(id)),occupied=!dirty&&this.state('binary_sensor',`software_zone_${id}_occupancy`)==='on'&&this.fresh();
             const w=z.x_max-z.x_min,h=z.y_max-z.y_min;
             const handles=selected?[[z.x_min,-z.y_max,'nw'],[z.x_max,-z.y_max,'ne'],[z.x_min,-z.y_min,'sw'],[z.x_max,-z.y_min,'se']].map(([x,y,corner])=>`<rect class="handle" data-handle="${corner}" x="${x-handle/2}" y="${y-handle/2}" width="${handle}" height="${handle}" rx="${1.5*scale}" fill="${c}" stroke="#10212a" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join(''):'';
-            return `<g data-map-zone="${id}"><rect class="zone-shape" x="${z.x_min}" y="${-z.y_max}" width="${w}" height="${h}" rx="${4*scale}" fill="${c}" fill-opacity="${occupied?.23:.11}" stroke="${c}" stroke-width="${selected?2:1.3}" ${dirty?'stroke-dasharray="5 4"':''} vector-effect="non-scaling-stroke"/><text x="${z.x_min+10*scale}" y="${-z.y_max+19*scale}" fill="${c}" font-size="${fs}" font-weight="650">${escapeHTML(z.name.length>18?z.name.slice(0,17)+'…':z.name)}</text><text x="${z.x_min+10*scale}" y="${-z.y_max+34*scale}" fill="${c}" opacity=".7" font-size="${fs*.77}">${(w/100).toFixed(1)} × ${(h/100).toFixed(1)} m${dirty?' · unsaved':''}</text>${handles}</g>`;
+            const by=this.rotation-(z.rotation??0);
+            return `<g data-map-zone="${id}"${by?` transform="rotate(${by})"`:''}><rect class="zone-shape" x="${z.x_min}" y="${-z.y_max}" width="${w}" height="${h}" rx="${4*scale}" fill="${c}" fill-opacity="${occupied?.23:.11}" stroke="${c}" stroke-width="${selected?2:1.3}" ${dirty?'stroke-dasharray="5 4"':''} vector-effect="non-scaling-stroke"/><text x="${z.x_min+10*scale}" y="${-z.y_max+19*scale}" fill="${c}" font-size="${fs}" font-weight="650">${escapeHTML(z.name.length>18?z.name.slice(0,17)+'…':z.name)}</text><text x="${z.x_min+10*scale}" y="${-z.y_max+34*scale}" fill="${c}" opacity=".7" font-size="${fs*.77}">${(w/100).toFixed(1)} × ${(h/100).toFixed(1)} m${dirty?' · unsaved':''}</text>${handles}</g>`;
         }).join('');
         setHtml(this.shadowRoot.querySelector('#zones'),shapes);
-        setHtml(this.shadowRoot.querySelector('#sensor'),`<g><circle cx="0" cy="0" r="${17*scale}" fill="#162d36" stroke="#67e4b870" vector-effect="non-scaling-stroke"/><path d="M ${-6*scale} ${4*scale} L 0 ${-8*scale} L ${6*scale} ${4*scale} Z" fill="#67e4b8"/><text x="${24*scale}" y="${4*scale}" fill="#91b4bd" font-size="${fs*.8}" letter-spacing="${scale}">FP400</text></g>`);
+        setHtml(this.shadowRoot.querySelector('#sensor'),`<g><circle cx="0" cy="0" r="${17*scale}" fill="#162d36" stroke="#67e4b870" vector-effect="non-scaling-stroke"/><path d="M ${-6*scale} ${4*scale} L 0 ${-8*scale} L ${6*scale} ${4*scale} Z" fill="#67e4b8" transform="rotate(${this.rotation})"/><text x="${24*scale}" y="${4*scale}" fill="#91b4bd" font-size="${fs*.8}" letter-spacing="${scale}">FP400</text></g>`);
         this.renderAreas();
         this.renderRulers();
     }
@@ -399,8 +475,8 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             }
         }
         setHtml(this.shadowRoot.querySelector('#areas'),cells);
-        const rect=(r,type,op,attrs,preview)=>`<rect ${attrs} x="${r.x_min}" y="${-r.y_max}" width="${r.x_max-r.x_min}" height="${r.y_max-r.y_min}" fill="${!preview?'transparent':op==='remove'?'#0b151c':`url(#${this.uid}-${type})`}" fill-opacity="${preview?.6:1}" stroke="${op==='remove'?'#eef5f6':AREAS[type].color}" stroke-width="1.6" stroke-dasharray="${op==='remove'?'3 4':'6 4'}" vector-effect="non-scaling-stroke"/>`;
-        let html=this.pendingAreas.map((o,i)=>rect(o.rect,o.type,o.op,`class="area-pending ${o.op}" data-pending="${i}" data-type="${o.type}"`)).join('');
+        const rect=(r,type,op,attrs,preview,by=0)=>`<rect ${attrs}${by?` transform="rotate(${by})"`:''} x="${r.x_min}" y="${-r.y_max}" width="${r.x_max-r.x_min}" height="${r.y_max-r.y_min}" fill="${!preview?'transparent':op==='remove'?'#0b151c':`url(#${this.uid}-${type})`}" fill-opacity="${preview?.6:1}" stroke="${op==='remove'?'#eef5f6':AREAS[type].color}" stroke-width="1.6" stroke-dasharray="${op==='remove'?'3 4':'6 4'}" vector-effect="non-scaling-stroke"/>`;
+        let html=this.pendingAreas.map((o,i)=>rect(o.rect,o.type,o.op,`class="area-pending ${o.op}" data-pending="${i}" data-type="${o.type}"`,false,this.rotation-(o.rotation??0))).join('');
         if(this.drag?.kind==='area-draw'&&this.drag.rect)html+=rect(this.drag.rect,this.areaType,this.areaTool,'class="area-preview"',true);
         setHtml(this.shadowRoot.querySelector('#pending-areas'),html);
     }
@@ -419,13 +495,25 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(!this.mounted)return;
         const fresh=this.fresh(),targets=fresh?this.targets():[],live=this.shadowRoot.querySelector('#live');
         live.classList.toggle('fresh',fresh);live.querySelector('span').textContent=fresh?`Live · ${targets.length} target${targets.length===1?'':'s'}`:'Positions unavailable';
+        live.title=fresh?'':'No position reports from the sensor in the last 30 seconds. Check that the FP400 is online in Zigbee2MQTT. If this lasts, set Mounted on and Wall position in Settings.';
         const scale=this.view.width/700,seen=targets.find(t=>t.id===this.target);
         if(seen)this.targetAt={x:seen.x,y:seen.y};
-        let html=targets.map(t=>{const sel=t.id===this.target;return `<g class="target" data-target="${t.id}"><circle class="hit" cx="${t.x}" cy="${-t.y}" r="${15*scale}" fill="${sel?'#ff6b7830':'#ffffff12'}"${sel?' stroke="#ff9aa5" stroke-width="1.5" vector-effect="non-scaling-stroke"':''}/><circle cx="${t.x}" cy="${-t.y}" r="${6*scale}" fill="#f6fbff" stroke="#142731" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="${t.x+11*scale}" y="${-t.y-11*scale}" fill="#fff" font-size="${10*scale}">${t.id+1}</text></g>`;}).join('');
+        let html=targets.map(t=>{const sel=t.id===this.target,v=turn(t,-this.rotation);return `<g class="target" data-target="${t.id}"><circle class="hit" cx="${v.x}" cy="${-v.y}" r="${15*scale}" fill="${sel?'#ff6b7830':'#ffffff12'}"${sel?' stroke="#ff9aa5" stroke-width="1.5" vector-effect="non-scaling-stroke"':''}/><circle cx="${v.x}" cy="${-v.y}" r="${6*scale}" fill="#f6fbff" stroke="#142731" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="${v.x+11*scale}" y="${-v.y-11*scale}" fill="#fff" font-size="${10*scale}">${t.id+1}</text></g>`;}).join('');
         // Where the selected target was last seen, so a flickering ghost can still be dealt with.
-        if(this.target!==null&&!seen&&this.targetAt){const a=this.targetAt;html+=`<g class="target lost"><circle cx="${a.x}" cy="${-a.y}" r="${15*scale}" fill="none" stroke="#ff9aa5" stroke-width="1.2" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><text x="${a.x+11*scale}" y="${-a.y-11*scale}" fill="#ff9aa5" font-size="${10*scale}">${this.target+1}</text></g>`;}
+        if(this.target!==null&&!seen&&this.targetAt){const a=turn(this.targetAt,-this.rotation);html+=`<g class="target lost"><circle cx="${a.x}" cy="${-a.y}" r="${15*scale}" fill="none" stroke="#ff9aa5" stroke-width="1.2" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><text x="${a.x+11*scale}" y="${-a.y-11*scale}" fill="#ff9aa5" font-size="${10*scale}">${this.target+1}</text></g>`;}
         setHtml(this.shadowRoot.querySelector('#targets'),html);
+        // Zones that never arrive must not look deleted: after a while, say why they are missing.
+        if(!this.firstFit&&this.startedAt&&Date.now()-this.startedAt>this.loadingGrace){
+            const problem=this.deviceNote??this.loadingProblem();
+            if(problem!==this.lastProblem){this.lastProblem=problem;this.notice(problem,'error');}
+        }
         if(!this.drag){this.renderList();if(this.target!==null&&!this.inside('#inspector'))this.renderInspector();}
+    }
+    loadingProblem(){
+        const zones=[1,2,3,4,5,6,7,8].map(id=>this.state('text',`software_zone_${id}_config`));
+        if(zones.every(z=>z===undefined))return `Home Assistant has no zone controls for the FP400 "${this.device}". Check that the converter is installed and that Zigbee2MQTT has restarted (see the README).`;
+        if(zones.some(z=>z==='unavailable'))return 'Zigbee2MQTT or the FP400 is offline right now. Your zones are kept in Zigbee2MQTT and come back when it reconnects.';
+        return 'Zigbee2MQTT has not sent your saved zones yet. After a restart this can take a minute.';
     }
     renderList(){
         const rows=[];
@@ -438,7 +526,8 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         }
         // Rows are rebuilt only when names or selection change; live status updates in place, so clicks are never lost.
         const list=this.shadowRoot.querySelector('#zone-list');
-        setHtml(list,rows.map(r=>`<button class="zone-row ${r.id===this.selected?'selected':''}" style="--zone-color:${COLORS[r.id-1]}" data-zone="${r.id}" ${this.saving?'disabled':''}><span class="swatch"></span><span class="zone-info"><strong>${escapeHTML(r.name)}</strong><small></small></span><span class="dot"></span></button>`).join('')||'<div class="empty">Your room is a blank canvas.<br>Choose <b>Draw zone</b> to add your first area.</div>');
+        const empty=this.loaded.size<8?`<div class="empty">${escapeHTML(this.lastProblem??'Loading your saved zones…')}</div>`:'<div class="empty">Your room is a blank canvas.<br>Choose <b>Draw zone</b> to add your first area.</div>';
+        setHtml(list,rows.map(r=>`<button class="zone-row ${r.id===this.selected?'selected':''}" style="--zone-color:${COLORS[r.id-1]}" data-zone="${r.id}" ${this.saving?'disabled':''}><span class="swatch"></span><span class="zone-info"><strong>${escapeHTML(r.name)}</strong><small></small></span><span class="dot"></span></button>`).join('')||empty);
         for(const r of rows){const row=list.querySelector(`[data-zone="${r.id}"]`),small=row.querySelector('small');if(small.textContent!==r.status)small.textContent=r.status;row.querySelector('.dot').hidden=!r.dot;}
         this.shadowRoot.querySelector('#zone-count').textContent=`${rows.filter(r=>r.z).length} / 8`;
     }
@@ -480,7 +569,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(this.available('button','refresh_configuration'))room.push(`<button class="btn" data-action="refresh">Read settings from the sensor</button>`);
         setHtml(this.shadowRoot.querySelector('#settings'),`<div class="settings-head"><h2 class="section-title">SENSOR SETTINGS</h2><button class="btn icon" data-action="settings" aria-label="Close settings">✕</button></div>${groups||'<div class="empty">No settings found. Update the FP400 converter in Zigbee2MQTT.</div>'}${room.length?`<h2 class="section-title">ROOM</h2>${room.join('')}`:''}<p class="small-note">Changes apply right away.</p>`);
     }
-    settingRow(domain,key,label,extra,scale=1){
+    settingRow(domain,key,label,extra){
         const id=this.entity(domain,key),s=this._hass?.states?.[id];if(!s)return '';
         const attrs=`data-setting="${id}" aria-label="${label}" ${s.state==='unavailable'||this.busy[id]?'disabled':''}`;
         if(domain==='switch')return `<label class="setting toggle"><span>${label}</span><input type="checkbox" role="switch" ${attrs} ${s.state==='on'?'checked':''}></label>`;
@@ -488,19 +577,19 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             const values=(s.attributes?.options??Object.keys(extra)).filter(v=>v in extra);
             return `<label class="setting"><span>${label}</span><select ${attrs}>${values.includes(s.state)?'':'<option value="" selected disabled>Not set</option>'}${values.map(v=>`<option value="${v}" ${v===s.state?'selected':''}>${extra[v]}</option>`).join('')}</select></label>`;
         }
-        const value=Number(s.state),a=s.attributes??{};
-        return `<label class="setting"><span>${label} · ${extra}</span><input type="number" ${attrs} min="${Math.max(a.min??0,a.step??1)/scale}" max="${(a.max??65535)/scale}" step="1" value="${s.state!==''&&Number.isFinite(value)?value/scale:''}"></label>`;
+        const value=Number(s.state),a=s.attributes??{},{unit,scale=1,min=a.min??0,hint}=extra;
+        return `<label class="setting"${hint?` title="${escapeHTML(hint)}"`:''}><span>${label} · ${unit}</span><input type="number" ${attrs} min="${min/scale}" max="${(a.max??65535)/scale}" step="1" value="${s.state!==''&&Number.isFinite(value)?value/scale:''}"></label>`;
     }
     // Settings apply at once and count as done only when the sensor's reported state matches.
     async applySetting(input){
         const id=input.dataset.setting;if(!id||this.busy[id])return;
         const [domain,object]=id.split('.'),item=SETTINGS.flatMap(([,items])=>items).find(([d,k])=>d===domain&&object===`${this.device}_${k}`);if(!item)return;
-        const [, ,label,,scale=1]=item,a=this._hass.states[id]?.attributes??{},data={entity_id:id};let service,expected;
+        const [, ,label,extra]=item,a=this._hass.states[id]?.attributes??{},data={entity_id:id};let service,expected;
         try{
             if(domain==='switch'){service=input.checked?'turn_on':'turn_off';expected=input.checked?'on':'off';}
             else if(domain==='select'){service='select_option';data.option=expected=input.value;}
             else {
-                const value=Math.round(Number(input.value)*scale),min=Math.max(a.min??0,a.step??1),max=a.max??Infinity;
+                const {scale=1,min=a.min??0}=extra,value=Math.round(Number(input.value)*scale),max=a.max??Infinity;
                 if(!input.value.trim()||!Number.isFinite(value)||value<min||value>max)throw new Error(`${label}: enter a number from ${min/scale} to ${max/scale}.`);
                 service='set_value';data.value=expected=value;
             }
@@ -610,11 +699,11 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             // The converter edits a mask read-modify-write, so each edit must land before the next is sent.
             const total=this.pendingAreas.length;
             for(let n=1;this.pendingAreas.length;n++){
-                const {type,op,rect}=this.pendingAreas[0],need=rectBits(rect),have=maskBits(this.areaMask(type));
-                const done=bits=>need.every(bit=>bits.has(bit)===(op!=='remove'));
+                const edit=this.pendingAreas[0],{type}=edit,remove=edit.op==='remove',need=opBits(edit),have=maskBits(this.areaMask(type));
+                const done=bits=>need.every(bit=>bits.has(bit)===!remove);
                 if(!have||!done(have)){
                     this.notice(`Saving area edit ${n} of ${total}…`);
-                    await this._hass.callService('text','set_value',{entity_id:this.entity('text',`${type}_zone_${op==='remove'?'remove':'add'}`),value:JSON.stringify(rect)});
+                    await this._hass.callService('text','set_value',{entity_id:this.entity('text',`${type}_zone_${remove?'remove':'add'}`),value:JSON.stringify(edit.rotation?{points:opPoints(edit)}:edit.rect)});
                     await this.waitForMask(type,done,`Area edit ${n} was not confirmed by the sensor. It is still unsaved; press Save to retry.`);
                 }
                 this.pendingAreas.shift();areasDone++;

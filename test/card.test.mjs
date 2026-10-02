@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,draftMask,FP400ZoneCard} from '../dist/fp400-zone-card.js';
+import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,draftMask,turn,rangeBox,opPoints,opBits,findDevice,FP400ZoneCard} from '../dist/fp400-zone-card.js';
 const desk={name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3};
 test('grid drawing works in every drag direction and snaps to half metres',()=>{
  assert.deepEqual(rectangleFromPoints({x:114,y:174},{x:-112,y:21}),{x_min:-100,x_max:100,y_min:0,y_max:150});
@@ -16,9 +16,37 @@ test('moving a zone that is already outside the map never makes it jump',()=>{
  const wide={...desk,x_min:-900,x_max:900};assert.deepEqual(moveRectangle(wide,30,0,0),wide);
  assert.equal(moveRectangle(far,200,0).x_min,-800);
 });
-test('the card picker finds the FP400 by its entities, whatever it is called',()=>{
- assert.deepEqual(FP400ZoneCard.getStubConfig({states:{'light.kitchen':{},'text.living_room_fp400_software_zone_1_config':{state:'clear'}}}),{device:'living_room_fp400'});
- assert.deepEqual(FP400ZoneCard.getStubConfig({states:{'light.kitchen':{}}}),{});
+test('the card picker writes no device, so renaming the sensor later cannot break the card; it finds the FP400 itself',()=>{
+ assert.deepEqual(FP400ZoneCard.getStubConfig({states:{'text.living_room_fp400_software_zone_1_config':{state:'clear'}}}),{});
+ assert.equal(findDevice({states:{'light.kitchen':{},'text.living_room_fp400_software_zone_1_config':{state:'clear'}}}),'living_room_fp400');
+ assert.equal(findDevice({states:{'light.kitchen':{}}}),null);
+});
+test('a configured FP400 that was renamed falls back to the only one Home Assistant has, and says so',()=>{
+ const c=Object.create(FP400ZoneCard.prototype);c.dirty=new Set();c.loaded=new Set();c.notice=t=>{c.message=t;};
+ c.config={device:'old_name'};c._hass={states:{'text.new_name_software_zone_1_config':{state:'clear'}}};
+ c.resolveDevice();assert.equal(c.device,'new_name');assert.match(c.message,/old_name.*new_name/);
+ c._hass.states['text.other_software_zone_1_config']={state:'clear'};c.resolveDevice();
+ assert.equal(c.device,'old_name','with two candidates it does not guess');assert.match(c.message,/new_name, other/);
+ c.config={device:'other'};c.resolveDevice();assert.equal(c.device,'other');assert.equal(c.deviceNote,null);
+});
+test('turned maps: points turn around the sensor, and the range box turns with them',()=>{
+ const p=turn({x:100,y:0},90);assert.ok(Math.abs(p.x)<1e-9&&Math.abs(p.y-100)<1e-9);
+ assert.deepEqual(rangeBox(0),{x_min:-400,x_max:400,y_min:-50,y_max:1000});
+ assert.deepEqual(rangeBox(90),{x_min:-50,x_max:1000,y_min:-400,y_max:400});
+ const b=rangeBox(45);assert.deepEqual(fitView([],45),{x:b.x_min,y:b.y_min,width:b.x_max-b.x_min,height:b.y_max-b.y_min},'an empty turned map shows the whole range');
+ assert.deepEqual(fitView([]),{x:-300,y:-50,width:600,height:600});
+});
+test('zones keep the turn of the map they were drawn on',()=>{
+ assert.equal(normalizeZone({...desk,rotation:45}).rotation,45);
+ assert.equal('rotation' in normalizeZone({...desk,rotation:0}),false);
+ assert.throws(()=>normalizeZone({...desk,rotation:200}));
+});
+test('areas: a straight map sends rectangles; a turned one sends corner points covering the right cells',()=>{
+ const rect={x_min:-100,x_max:0,y_min:100,y_max:200};
+ assert.deepEqual(opBits({rect}),rectBits(rect));
+ const turned={rect:{x_min:-300,x_max:-200,y_min:-100,y_max:0},rotation:-90};
+ assert.deepEqual(opPoints(turned),[[-100,300],[-100,200],[0,200],[0,300]]);
+ assert.deepEqual(opBits(turned),rectBits({x_min:-100,x_max:0,y_min:200,y_max:300}));
 });
 test('invalid input never becomes a usable zone; user names remain data',()=>{
  assert.throws(()=>normalizeZone({...desk,x_max:-115}));assert.throws(()=>normalizeZone({...desk,name:''}));assert.throws(()=>normalizeZone({...desk,absence_timeout:NaN}));

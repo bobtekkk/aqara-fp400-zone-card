@@ -7,6 +7,23 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
+### Added
+
+- **Turn the map** for a sensor mounted in a corner ([#1](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/1)). Set it in ⚙ Settings (try 45 or -45) and the room looks square on the map. Zones drawn after that follow the room's walls, and areas painted on the turned map cover the cells under the shape. The turn is stored with the sensor, so every dashboard agrees.
+- Converter: zones accept a `rotation`, area controls accept a turned shape as `{"points": [[x, y], ...]}`, and the new `map_rotation` setting.
+
+### Changed
+
+- Adding the card from the card picker no longer writes `device:` into its settings. The card finds the FP400 itself, so renaming the sensor later can't break it ([#2](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/2)).
+
+### Fixed
+
+- Zones no longer look deleted while they can't be shown ([#2](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/2)). Instead of an empty room, the card says why: Zigbee2MQTT or the sensor is offline, the zones haven't arrived yet, or the converter is missing.
+- A card still set to a sensor's old name now uses the only FP400 in Home Assistant and says which name to put in `device:` ([#2](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/2)).
+- When positions are missing, hovering the **Positions unavailable** badge explains what to check.
+
 ## [0.2.1] - 2026-10-02
 
 ### Fixed
@@ -47,7 +64,8 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/releases/tag/v0.1.0

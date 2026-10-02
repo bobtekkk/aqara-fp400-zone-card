@@ -16,6 +16,7 @@ Draw presence zones, doorways and "ghost" spots for the **Aqara FP400** spatial 
 - **Sensor settings.** Sensitivity, empty delay, approach distance, AI features, mounting and room learning, in one panel.
 - **Movement events.** Enter, leave, approach, away and left/right events from the sensor, ready for automations.
 - **Live map.** See tracked people move, with metre rulers. Pan, zoom and snap to a 0.5 m or 0.1 m grid.
+- **Sensor in a corner?** Turn the map so the room looks square, and draw zones along its walls.
 - **Safe editing.** Nothing changes until you press Save, and the card only says "Saved" once the sensor confirms it.
 
 **No Matter or Thread hardware needed.** Everything runs over Zigbee, on the Zigbee coordinator you already use with Zigbee2MQTT. No Thread border router, no Matter controller, no Aqara hub.
@@ -74,7 +75,7 @@ type: custom:fp400-zone-card
 device: living_room_fp400 # optional
 ```
 
-`device` is the start of your FP400's entity IDs, the part before `_software_zone_1_config`. You only need it when you have more than one FP400.
+`device` is the start of your FP400's entity IDs, the part before `_software_zone_1_config`. You only need it when you have more than one FP400. Without it, the card keeps working if you rename the sensor; with an old name, it tells you which name to use.
 
 ## Using it
 
@@ -85,6 +86,7 @@ device: living_room_fp400 # optional
   - **Outside room** (grey): behind a wall, a window or in the next room; the sensor stops watching those cells.
 - **A dot you don't trust**: click it. **Forget this target** makes the sensor drop it (a real person comes back within seconds). **Ignore this spot** adds a 1 × 1 m ignore spot around it, for you to save.
 - **⚙ Settings** (top right) changes the sensor's settings. They apply right away.
+- **Sensor in a corner?** In ⚙ Settings, set **Turn the map** (try 45 or -45) until the room looks square. Zones you draw after that follow the room's walls; zones drawn before stay exactly where they were.
 - Drag empty space to pan, use the mouse wheel to zoom, drag a zone to move it and its corners to resize it. Arrow keys nudge the selected zone.
 - **Discard** throws away everything you have not saved.
 
@@ -122,6 +124,13 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 - The converter re-reads the areas every 5 minutes, so the card also shows changes made elsewhere.
 - Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets nothing is lost; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
+- The map turn is stored with the sensor (`number.<fp400>_map_rotation`), so every dashboard shows the room the same way. Each zone remembers the turn it was drawn with.
+
+## If something looks wrong
+
+- **The zone list is empty or says it is waiting.** Your zones are stored in Zigbee2MQTT, not in the card. The card says why it can't show them: Zigbee2MQTT or the sensor is offline, the zones haven't arrived yet after a restart, or it can't find the sensor (for example after renaming it). They come back by themselves once the cause is gone.
+- **Zones flip to "unknown".** The card's badge says **Positions unavailable** when the sensor stops sending positions. On an Ember coordinator, use converter 0.2.1 or newer (see above). If it lasts, set **Mounted on** and **Wall position** in ⚙ Settings.
+- **A dot nobody is standing on.** Click it and choose **Forget this target**; if it keeps coming back, **Ignore this spot**.
 
 ## Changelog
 

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import definition,{SoftwareZoneTracker,parseSoftwareZone} from '../z2m/aqara-fp400.mjs';
+import definition,{SoftwareZoneTracker,parseSoftwareZone,inZone} from '../z2m/aqara-fp400.mjs';
 const desk=parseSoftwareZone({name:'Desk',x_min:-140,x_max:60,y_min:8,y_max:158,absence_timeout:3});
 test('desk entry, delayed exit, and stale data',()=>{
  const t=new SoftwareZoneTracker({1:desk});
@@ -113,4 +113,11 @@ test('configuration controls cannot be mistaken for numbered endpoints',()=>{
  for(const converter of definition.toZigbee.filter(c=>c.key.some(k=>k.startsWith('software_zone_')))) {
   for(const key of converter.key)assert.equal(endpoints.some(endpoint=>key.endsWith(`_${endpoint}`)),false,`${key} would be split into an endpoint suffix`);
  }
+});
+test('a zone drawn on a turned map checks targets in its own frame',()=>{
+ const z=parseSoftwareZone({name:'Bed',x_min:0,x_max:100,y_min:200,y_max:300,rotation:90});
+ assert.equal(inZone({x:-250,y:50},z),true);assert.equal(inZone({x:50,y:250},z),false);
+ const t=new SoftwareZoneTracker({1:z});t.accept([{id:1,x:-250,y:50}],0);assert.equal(t.state(0).software_zone_1_occupancy,true);
+ assert.equal('rotation' in parseSoftwareZone({name:'Bed',x_min:0,x_max:100,y_min:200,y_max:300,rotation:0}),false);
+ assert.throws(()=>parseSoftwareZone({name:'Bed',x_min:0,x_max:100,y_min:200,y_max:300,rotation:181}),/rotation/);
 });

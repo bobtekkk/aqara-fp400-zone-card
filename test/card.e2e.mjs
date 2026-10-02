@@ -457,6 +457,58 @@ const scenarios = {
         check('Y4 Save writes that spot to the sensor', sameBits(maskSet(x.mask), bitsOf([[-200, -100, 200, 300]])), x);
         noErrors('Y5', page); await page.close();
     },
+    async RA() { // issue #1: a sensor in a corner, with the map turned 45°
+        const page = await open('?rotation=45&latency=100');
+        const geo = () => page.evaluate(() => { const r = document.querySelector('fp400-zone-card').shadowRoot;
+            return {frame: r.querySelector('#sensor-frame').getAttribute('transform'), desk: r.querySelector('[data-map-zone="1"]').getAttribute('transform'),
+                dots: [...r.querySelectorAll('#targets .target circle.hit')].map(c => [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))])}; });
+        const g = await geo();
+        check('RA1 the sensor\'s frame and zones drawn before turn with the map', g.frame === 'rotate(45)' && g.desk === 'rotate(45)', g);
+        check('RA2 targets sit at their turned positions', g.dots.some(([x, y]) => Math.abs(x - 40.3) < 0.2 && Math.abs(y + 75.7) < 0.2), g);
+        await btn(page, 'draw').click();
+        await drag(page, [100, 300], [300, 450]);
+        await btn(page, 'save').click(); await waitIdle(page);
+        const saved = await page.evaluate(() => JSON.parse(document.querySelector('fp400-zone-card')._hass.states['text.0x54ef440000000001_software_zone_3_config'].state));
+        check('RA3 a zone drawn on the turned map is saved with that turn, square to the map', saved.rotation === 45 && saved.x_min === 100 && saved.x_max === 300 && saved.y_min === 300 && saved.y_max === 450, saved);
+        const t3 = await page.evaluate(() => document.querySelector('fp400-zone-card').shadowRoot.querySelector('[data-map-zone="3"]').getAttribute('transform'));
+        check('RA4 and it is drawn without any extra turn', t3 === null, t3);
+        await btn(page, 'areas').click();
+        await drag(page, [-200, 300], [-50, 450]);
+        const preview = await page.evaluate(() => [...document.querySelector('fp400-zone-card').draftBits('interference')]);
+        await btn(page, 'save').click(); await waitIdle(page);
+        const x = await sim(page), shapes = await page.evaluate(() => window.__sim.shapes);
+        check('RA5 an area painted on the turned map goes to the converter as corner points', shapes.length === 1 && shapes[0].points?.length === 4, shapes);
+        check('RA6 the sensor stores exactly the cells the map showed before Save', preview.length > 0 && sameBits(maskSet(x.mask), new Set(preview)), {preview, mask: [...maskSet(x.mask)]});
+        noErrors('RA7', page); await page.close();
+    },
+    async RB() { // the map turn is a setting kept with the sensor
+        const page = await open('?latency=100');
+        await btn(page, 'settings').first().click();
+        await setting(page, 'map_rotation').fill('-45'); await setting(page, 'map_rotation').press('Enter');
+        await waitMessage(page, /Saved: Turn the map/);
+        const r = await page.evaluate(() => ({frame: document.querySelector('fp400-zone-card').shadowRoot.querySelector('#sensor-frame').getAttribute('transform'), call: window.__sim.calls.at(-1)}));
+        check('RB1 Turn the map is saved with the sensor and turns the map', r.frame === 'rotate(-45)' && r.call.service === 'set_value' && r.call.value === -45, r);
+        noErrors('RB2', page); await page.close();
+    },
+    async RC() { // issue #2: the card still names a sensor that was renamed
+        const page = await open('?device=old_name');
+        const r = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {device: c.device, zones: Object.values(c.drafts).filter(Boolean).length, message: c.shadowRoot.querySelector('#message').textContent}; });
+        check('RC1 the card falls back to the only FP400 and shows its zones', r.device === '0x54ef440000000001' && r.zones === 2, r);
+        check('RC2 and says what to change', /old_name.*0x54ef440000000001/.test(r.message), r);
+        noErrors('RC3', page); await page.close();
+    },
+    async RD() { // issue #2: Zigbee2MQTT offline must not look like deleted zones
+        const page = await browser.newPage({viewport: {width: 1440, height: 900}});
+        page.errors = []; page.on('pageerror', e => page.errors.push(String(e)));
+        await page.goto(BASE + '?offline=1');
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card')?.mounted);
+        await page.evaluate(() => { document.querySelector('fp400-zone-card').loadingGrace = 300; });
+        await page.waitForFunction(() => /offline/.test(document.querySelector('fp400-zone-card').shadowRoot.querySelector('#zone-list').textContent), null, {timeout: 6000}).catch(() => {});
+        const r = await page.evaluate(() => { const q = s => document.querySelector('fp400-zone-card').shadowRoot.querySelector(s); return {list: q('#zone-list').textContent, message: q('#message').textContent, live: q('#live').title}; });
+        check('RD1 offline zones are explained, never shown as a blank canvas', !/blank canvas/.test(r.list) && /offline/.test(r.list) && /offline/.test(r.message), r);
+        check('RD2 the live badge explains missing positions', /position reports/.test(r.live), r);
+        noErrors('RD3', page); await page.close();
+    },
     async Z() { // zone rows show how many people and whether they move
         const page = await open();
         const row = await page.locator('fp400-zone-card .zone-row[data-zone="1"] small').textContent();
