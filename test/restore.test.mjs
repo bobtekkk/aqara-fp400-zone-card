@@ -22,8 +22,10 @@ function fakeSensor(ieeeAddr) {
         attr: (endpoint, cluster, id) => attributes.get(`${endpoint}/${cluster}/${id}`),
         setAttr: (endpoint, cluster, id, value) => attributes.set(`${endpoint}/${cluster}/${id}`, value),
         getEndpoint: endpoint => ({
+            ID: endpoint,
             read: async (cluster, ids) => {
                 if (device.offline) throw new Error('Timeout');
+                if (cluster === 'aqaraFp400Radar' && ids[0] === 0) return {0: [...attributes.keys()].filter(key => key.endsWith('/aqaraFp400Radar/1')).map(key => Number(key.split('/')[0]))};
                 const data = {};
                 for (const id of ids) {
                     const value = attributes.get(`${endpoint}/${cluster}/${id}`);
@@ -159,4 +161,16 @@ test('zone slot settings are kept too', async () => {
     device.setAttr(3, 128, 0, 1);
     await announce(device); await fp400Poll(device);
     assert.equal(device.attr(3, 128, 0), 0);
+});
+
+test('legacy settings do not follow a reused endpoint into another native zone', async () => {
+    const device = fakeSensor('restore-zone-reassigned');
+    device.setAttr(3, 'aqaraFp400Radar', 1, 1);
+    device.setAttr(3, 128, 0, 1);
+    await fp400Poll(device);
+    await set('zone_1_sensitivity', 'low', device);
+    device.setAttr(3, 'aqaraFp400Radar', 1, 2);
+    device.setAttr(3, 128, 0, 1);
+    await announce(device); await fp400Poll(device);
+    assert.equal(device.attr(3, 128, 0), 1, 'zone 2 keeps its own sensitivity');
 });

@@ -120,6 +120,10 @@ const cellBox = (page, type) => page.evaluate(type => {
     return cs.length ? [Math.min(...cs.map(c => c.x)), Math.max(...cs.map(c => c.x + 50)), Math.min(...cs.map(c => c.y)), Math.max(...cs.map(c => c.y + 50))] : null;
 }, type);
 
+async function nativeMode(page){
+    await btn(page,'zone-mode').click();
+    await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card');c.view={x:-400,y:-50,width:800,height:900};c.render();});
+}
 const scenarios = {
     async A() { // drawn and then cancelled: nothing stays behind
         const page = await open();
@@ -540,6 +544,95 @@ const scenarios = {
         const row = await page.locator('fp400-zone-card .zone-row[data-zone="1"] small').textContent();
         check('Z1 the Desk row says one person, still', row === 'Occupied · 1 person, still', row);
         noErrors('Z2', page); await page.close();
+    },
+    async NS() { // native cells and telemetry use their own entities, including renamed ones
+        const page = await open('?native=1&renamed=1&latency=200&held=1');
+        check('NS1 software remains the default', await btn(page, 'zone-mode').textContent() === 'Software zones');
+        await nativeMode(page);
+        await page.locator('fp400-zone-card .zone-row[data-zone="1"]').click();
+        const before = await page.evaluate(() => { const c=document.querySelector('fp400-zone-card');return {mask:c.saved[1].mask_hex,row:c.shadowRoot.querySelector('.zone-row[data-zone="1"] small').textContent}; });
+        check('NS2 native occupancy and count work while positions are paused', before.row === 'Occupied · 2 people', before);
+        check('NS3 the non-rectangular mask keeps its hole', await page.locator('fp400-zone-card #zones [data-map-zone="1"] rect').count() === 8);
+        const name=page.locator('fp400-zone-card input[data-field="name"]');await name.fill('Sensor office');await name.press('Enter');
+        check('NS4 switching is disabled while native edits are unsaved', await btn(page,'zone-mode').isDisabled());
+        await btn(page,'save').click();
+        check('NS5 a successful HA call alone does not finish the save', (await st(page)).saving);
+        await waitIdle(page);
+        let sent=await page.evaluate(()=>window.__sim.calls.at(-1));
+        check('NS6 rename keeps every mask bit and addresses the renamed native entity', sent.entity_id==='text.kitchen_native_configuration'&&JSON.parse(sent.value).mask_hex===before.mask&&!('absence_timeout' in JSON.parse(sent.value)),sent);
+        await page.locator('fp400-zone-card [data-action="native-paint"][data-tool="add"]').click();
+        await drag(page,[-100,200],[-50,250]);
+        await page.locator('fp400-zone-card [data-action="native-paint"][data-tool="remove"]').click();
+        await drag(page,[50,200],[100,250]);
+        await btn(page,'save').click();await waitIdle(page);
+        sent=await page.evaluate(()=>window.__sim.calls.at(-1));
+        check('NS7 paint and erase preserve the other cells and hole', sameBits(maskSet(JSON.parse(sent.value).mask_hex),new Set([71,72,73,86,88,102,103,104])),sent);
+        await btn(page,'zone-mode').click();
+        const software=await page.evaluate(()=>document.querySelector('fp400-zone-card').drafts[1]);
+        check('NS8 software geometry and name are preserved', software.name==='Desk'&&software.x_min===-115,software);
+        noErrors('NS9',page);await page.close();
+    },
+    async NT() { // an unknown sensor zone requires explicit authorization, including deletion
+        for(const remove of [false,true]){
+            const page=await open('?native=1&latency=100');await nativeMode(page);
+            await page.locator('fp400-zone-card .zone-row[data-zone="2"]').click();
+            if(remove)await btn(page,'delete').click();
+            else {await page.locator('fp400-zone-card [data-action="native-paint"][data-tool="add"]').click();await drag(page,[200,400],[300,500]);}
+            await btn(page,'save').click();
+            check(`NT1 ${remove?'delete':'replace'} is blocked before confirmation`,(await page.evaluate(()=>window.__sim.calls.length))===0&&/Confirm/.test((await st(page)).message));
+            await page.locator('fp400-zone-card input[data-overwrite="2"]').check();await btn(page,'save').click();await waitIdle(page);
+            const sent=await page.evaluate(()=>window.__sim.calls.at(-1));const value=JSON.parse(sent.value);
+            check(`NT2 ${remove?'delete':'replace'} sends explicit overwrite`,value.overwrite===true&&(remove?value.clear===true:maskSet(value.mask_hex).size===4),sent);
+            noErrors('NT3',page);await page.close();
+        }
+    },
+    async NF() { // failed writes retain the intended mask and require confirmation before retrying uncertainty
+        const page=await open('?native=1&latency=100');await nativeMode(page);await page.locator('fp400-zone-card .zone-row[data-zone="1"]').click();
+        const name=page.locator('fp400-zone-card input[data-field="name"]');await name.fill('Retry desk');await name.press('Enter');
+        await page.evaluate(()=>{window.__sim.nativeFail='Sensor refused';});await btn(page,'save').click();await waitIdle(page);
+        check('NF1 failure keeps edits and explains the error',/Sensor refused/.test((await st(page)).message)&&!(await btn(page,'save').isDisabled()));
+        await page.locator('fp400-zone-card input[data-overwrite="1"]').check();await page.evaluate(()=>{window.__sim.nativeFail='';});await btn(page,'save').click();await waitIdle(page);
+        check('NF2 explicit retry succeeds',/^Saved/.test((await st(page)).message)&&(await btn(page,'save').isDisabled()));
+        noErrors('NF3',page);await page.close();
+    },
+    async NC() { // drawing uses only a confirmed free native slot
+        const page=await open('?native=1&latency=100');await nativeMode(page);await btn(page,'draw').click();await drag(page,[-300,400],[-200,500]);
+        const selected=await page.evaluate(()=>document.querySelector('fp400-zone-card').selected);
+        check('NC1 drawing skips the unmanaged native ID',selected===3,selected);
+        const timeout=page.locator('fp400-zone-card input[data-native-timeout="3"]');
+        check('NC2 a new zone cannot write the empty delay before it exists',await timeout.isDisabled());
+        await btn(page,'save').click();
+        await page.waitForFunction(()=>document.querySelector('fp400-zone-card').nativeStatus(3)==='pending');
+        await page.waitForTimeout(15500);
+        check('NC3 finalization beyond 15 seconds stays pending without enabling the timeout',(await st(page)).saving&&await timeout.isDisabled()&&!/not confirmed/.test((await st(page)).message));
+        await waitIdle(page,45000);
+        const sent=await page.evaluate(()=>window.__sim.calls.at(-1));check('NC4 new native mask goes to that slot without a timeout',sent.entity_id==='text.0x54ef440000000001_native_zone_3_config'&&maskSet(JSON.parse(sent.value).mask_hex).size===4&&!('absence_timeout' in JSON.parse(sent.value)),sent);
+        check('NC5 the sensor value becomes editable only after finalization',!(await timeout.isDisabled())&&await timeout.inputValue()==='10');
+        await timeout.fill('25');await timeout.press('Enter');await waitMessage(page,/Saved: Zone 3 empty delay/);
+        const writes=await page.evaluate(()=>window.__sim.calls);
+        check('NC6 changing empty delay sends only the separate number setting',writes.length===2&&writes[1].domain==='number'&&writes[1].service==='set_value'&&writes[1].entity_id==='number.0x54ef440000000001_zone_3_absence_timeout'&&writes[1].value===25&&(await btn(page,'save').isDisabled()),writes);
+        noErrors('NC7',page);await page.close();
+    },
+    async NO() { // native controls are optional; disabling them must not throw edits away
+        const off=await open();await btn(off,'zone-mode').click();
+        check('NO1 optional native mode explains how to enable it and stays in software',await btn(off,'zone-mode').textContent()==='Software zones'&&/Enable native_zones/.test((await st(off)).message));
+        noErrors('NO2',off);await off.close();
+        const page=await open('?native=1&renamed=1&latency=200');await nativeMode(page);await page.locator('fp400-zone-card .zone-row[data-zone="1"]').click();
+        const timeout=page.locator('fp400-zone-card input[data-native-timeout="1"]');
+        await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card'),id='number.kitchen_native_delay';c.hass.states[id]={...c.hass.states[id],state:'20'};c.hass={...c.hass};});
+        check('NO3 independent number state updates refresh the native inspector',await timeout.inputValue()==='20');
+        await timeout.fill('25');
+        await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card'),id='number.kitchen_native_delay';c.hass.states[id]={...c.hass.states[id],state:'15'};c.hass={...c.hass};});
+        check('NO4 live updates preserve the value being typed',await timeout.inputValue()==='25');
+        await timeout.press('Enter');await waitMessage(page,/Saved: Zone 1 empty delay/);
+        const writes=await page.evaluate(()=>window.__sim.calls);
+        check('NO5 renamed number entity is used without writing geometry',writes.length===1&&writes[0].domain==='number'&&writes[0].entity_id==='number.kitchen_native_delay'&&writes[0].value===25&&(await btn(page,'save').isDisabled()),writes);
+        const name=page.locator('fp400-zone-card input[data-field="name"]');await name.fill('Keep this draft');await name.press('Enter');
+        await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card');for(const id of Object.keys(c.hass.states))if(id.includes('_native_zone_')||id==='text.kitchen_native_configuration')delete c.hass.states[id];c.hass={...c.hass};});
+        check('NO6 removing native controls keeps the draft and blocks writes',await name.inputValue()==='Keep this draft'&&await btn(page,'save').isDisabled()&&await timeout.isDisabled());
+        await btn(page,'discard').click();await btn(page,'zone-mode').click();
+        check('NO7 discard permits returning to software zones',await btn(page,'zone-mode').textContent()==='Software zones'&&await page.locator('fp400-zone-card .zone-row[data-zone="1"] strong').textContent()==='Desk');
+        noErrors('NO8',page);await page.close();
     },
 };
 

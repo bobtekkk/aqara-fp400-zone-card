@@ -22,7 +22,7 @@ test('the card picker writes no device, so renaming the sensor later cannot brea
  assert.equal(findDevice({states:{'light.kitchen':{}}}),null);
 });
 test('a configured FP400 that was renamed falls back to the only one Home Assistant has, and says so',()=>{
- const c=Object.create(FP400ZoneCard.prototype);c.dirty=new Set();c.loaded=new Set();c.notice=t=>{c.message=t;};
+ const c=Object.create(FP400ZoneCard.prototype);c.dirty=new Set();c.loaded=new Set();c.overwriteNative=new Set();c.notice=t=>{c.message=t;};
  c.config={device:'old_name'};c._hass={states:{'text.new_name_software_zone_1_config':{state:'clear'}}};
  c.resolveDevice();assert.equal(c.device,'new_name');assert.match(c.message,/old_name.*new_name/);
  c._hass.states['text.other_software_zone_1_config']={state:'clear'};c.resolveDevice();
@@ -56,7 +56,7 @@ test('invalid input never becomes a usable zone; user names remain data',()=>{
  assert.deepEqual(parseTargets('none'),[]);
 });
 function editor(){
- const c=Object.create(FP400ZoneCard.prototype);c.config={device:'0x54ef440000000001'};c.saved={1:desk,2:null};c.drafts={1:{...desk,name:'Desk revised'},2:null};c.base={1:{...desk}};c.dirty=new Set([1]);c.loaded=new Set([1,2]);c.saving=false;c.pendingAreas=[];c.pendingClears=new Set();c.render=()=>{};c.notice=(text)=>{c.message=text;};c._hass={user:{is_admin:false},callService:async()=>{}};return c;
+ const c=Object.create(FP400ZoneCard.prototype);c.config={device:'0x54ef440000000001'};c.saved={1:desk,2:null};c.drafts={1:{...desk,name:'Desk revised'},2:null};c.base={1:{...desk}};c.dirty=new Set([1]);c.loaded=new Set([1,2]);c.saving=false;c.pendingAreas=[];c.pendingClears=new Set();c.overwriteNative=new Set();c.render=()=>{};c.notice=(text)=>{c.message=text;};c._hass={user:{is_admin:false},callService:async()=>{}};return c;
 }
 test('save sends only changed zones and waits for confirmed device state',async()=>{
  const c=editor(),sent=[];c._hass.callService=async(domain,service,data)=>{sent.push({domain,service,data});c.saved[1]=JSON.parse(data.value);};
