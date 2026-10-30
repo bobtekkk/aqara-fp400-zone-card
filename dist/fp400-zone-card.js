@@ -616,7 +616,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     // Settings apply at once and count as done only when the sensor's reported state matches.
     async applySetting(input){
         const id=input.dataset.setting;if(!id||this.busy[id])return;
-        const [domain,object]=id.split('.'),item=SETTINGS.flatMap(([,items])=>items).find(([d,k])=>d===domain&&object===`${this.device}_${k}`);if(!item)return;
+        const domain=id.split('.')[0],item=SETTINGS.flatMap(([,items])=>items).find(([d,k])=>d===domain&&this.entity(d,k)===id);if(!item)return;
         const [, ,label,extra]=item,a=this._hass.states[id]?.attributes??{},data={entity_id:id};let service,expected;
         try{
             if(domain==='switch'){service=input.checked?'turn_on':'turn_off';expected=input.checked?'on':'off';}

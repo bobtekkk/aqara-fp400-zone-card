@@ -121,6 +121,20 @@ const cellBox = (page, type) => page.evaluate(type => {
 }, type);
 
 const scenarios = {
+    async RENAMED() {
+        for(const admin of [false,true]) {
+            const page=await open(`?renamedsettings=1&latency=20${admin?'&admin=1':''}`);
+            await btn(page,'settings').click();
+            const input=id=>page.locator(`fp400-zone-card [data-setting="${id}"]`);
+            await input('number.office_delay').fill('5');await input('number.office_delay').press('Tab');
+            await waitMessage(page,/Saved: Empty after/);
+            await input('select.office_detection').selectOption('high');await waitMessage(page,/Saved: Sensitivity/);
+            await input('switch.office_recognition').check();await waitMessage(page,/Saved: Better person recognition/);
+            const sent=await calls(page);
+            check(`RENAMED writes renamed controls (admin=${admin})`,['number.office_delay','select.office_detection','switch.office_recognition'].every(id=>sent.some(c=>c.entity_id===id)),sent);
+            noErrors('RENAMED',page);await page.close();
+        }
+    },
     async A() { // drawn and then cancelled: nothing stays behind
         const page = await open();
         await btn(page, 'areas').click();

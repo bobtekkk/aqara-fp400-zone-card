@@ -12,6 +12,7 @@ if(params.has('phone'))document.querySelector('main').className='phone';
 const idOf={},keyOf={},ieee='0x54ef440000000001';
 if(params.has('renamed'))for(const [d,k,n] of [['text','software_zone_1_config','kitchen_zone_configuration'],['binary_sensor','software_zone_1_occupancy','kitchen_occupancy'],['binary_sensor','software_zone_1_available','kitchen_tracking_available'],['sensor','software_zone_1_count','kitchen_people'],['sensor','software_zone_1_activity','kitchen_activity']])idOf[`${d}.${k}`]=`${d}.kitchen_fp400_${n}`;
 const set=(domain,key,state,attributes={})=>{const id=idOf[`${domain}.${key}`]??`${domain}.${device}_${key}`;keyOf[id]=key;states[id]={state,attributes};};
+if(params.has('renamedsettings'))Object.assign(idOf,{'number.absence_timeout':'number.office_delay','select.presence_sensitivity':'select.office_detection','switch.ai_high_precision':'switch.office_recognition'});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 for(let i=1;i<=8;i++){set('text',`software_zone_${i}_config`,'clear');set('binary_sensor',`software_zone_${i}_occupancy`,'off');set('binary_sensor',`software_zone_${i}_available`,'on');if(!old){set('sensor',`software_zone_${i}_count`,'unknown');set('sensor',`software_zone_${i}_activity`,'unknown');}}
 set('text','software_zone_1_config',JSON.stringify({name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3}));
@@ -60,7 +61,7 @@ async function convert(type,op,value){
     else {const shape=JSON.parse(value);sim.shapes.push(shape);for(const b of shape.points?shapeBits(shape.points):cellBits(shape)){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}}
     masks[type].set(read);set('sensor',`${type}_mask_hex`,maskHex(type));card.hass={...hass};
 }
-const hass={states,user:{is_admin:false},callService:async(domain,service,data)=>{
+const hass={states,user:{is_admin:params.has('admin')},callService:async(domain,service,data)=>{
     sim.calls.push({domain,service,...data});
     await sleep(20);
     const id=data.entity_id,key=keyOf[id]??id.slice(id.indexOf('.')+device.length+2),type=AREAS.find(t=>key.startsWith(`${t}_`));
@@ -74,7 +75,7 @@ const hass={states,user:{is_admin:false},callService:async(domain,service,data)=
     else later(()=>{states[id]={state:data.value,attributes:{}};});
 }};
 if(params.has('offline'))for(const id of Object.keys(states))states[id]={state:'unavailable',attributes:states[id].attributes};
-if(params.has('registry')||params.has('renamed')){
+if(params.has('registry')||params.has('renamed')||params.has('renamedsettings')){
     hass.entities=Object.fromEntries(Object.keys(keyOf).map(id=>[id,{entity_id:id,platform:'mqtt',device_id:'fp400'}]));
     hass.callWS=async msg=>{
         sim.ws.push(msg.type);
