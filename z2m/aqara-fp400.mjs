@@ -12,6 +12,7 @@ const aqaraHumanCount = {
     cluster: 'aqaraFp400Radar',
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
+        if (msg.endpoint.ID !== 1) return;
         const count = msg.data.humanCount ?? msg.data[2];
         return typeof count === 'number' ? {human_count: count} : undefined;
     },
@@ -20,6 +21,7 @@ const aqaraActivityState = {
     cluster: 'aqaraFp400Location',
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
+        if (msg.endpoint.ID !== 1) return;
         const state = msg.data.activityState ?? msg.data[7];
         const values = ['unknown', 'active', 'still'];
         return Number.isInteger(state) && state >= 0 && state < values.length
@@ -54,7 +56,7 @@ function decodeConfig(data) {
 }
 const fp400ConfigReport = {
     cluster: configCluster, type: ['attributeReport', 'readResponse'],
-    convert: (model, msg) => decodeConfig(msg.data),
+    convert: (model, msg) => msg.endpoint.ID === 1 ? decodeConfig(msg.data) : undefined,
 };
 const fp400ConfigControl = {
     key: Object.keys(configOptions),
