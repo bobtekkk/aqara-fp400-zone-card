@@ -234,11 +234,12 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         for(const type of Object.keys(AREAS))keys.push(['sensor',`${type}_mask_hex`],['text',`${type}_mask_hex`],['text',`${type}_zone_add`],['text',`${type}_zone_remove`],['text',`${type}_clear`]);
         for(let i=1;i<=8;i++)keys.push(['text',`software_zone_${i}_config`],['binary_sensor',`software_zone_${i}_occupancy`],['binary_sensor',`software_zone_${i}_available`],['sensor',`software_zone_${i}_count`],['sensor',`software_zone_${i}_activity`]);
         for(const [,items] of SETTINGS)for(const [domain,key] of items)keys.push([domain,key]);
+        keys.push(['sensor','learning_state'],['sensor','learning_result_code']);
         return keys.map(([domain,key])=>this.entity(domain,key));
     }
     get hass(){return this._hass;}
     connectedCallback(){this.clock??=setInterval(()=>{if(this.mounted)this.renderLive();},1000);if(this.mounted)this.resizeObs?.observe(this.svg);}
-    disconnectedCallback(){clearInterval(this.clock);this.clock=null;clearTimeout(this.learnTimer);this.resizeObs?.disconnect();}
+    disconnectedCallback(){clearInterval(this.clock);this.clock=null;clearTimeout(this.learnTimer);clearTimeout(this.learnResultTimer);this.learnBefore=undefined;this.resizeObs?.disconnect();}
     entity(domain,key){return this.fp?.keys?.[`${domain}.${key}`]??`${domain}.${this.device}_${key}`;}
     state(domain,key){return this._hass?.states?.[this.entity(domain,key)]?.state;}
     available(domain,key){return !['unavailable',undefined].includes(this.state(domain,key));}
@@ -291,7 +292,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         const areas=Object.keys(AREAS).map(t=>`${this.areaMask(t)}${this.areaReady(t)}${this.available('text',`${t}_zone_remove`)}`).join();
         if(areas!==this.lastAreas){this.lastAreas=areas;changed=true;}
         // The result time comes from the server's clock, so watch for it to change rather than comparing clocks.
-        if(this.learnBefore!==undefined&&this.state('sensor','learning_result_time')!==this.learnBefore){this.learnBefore=undefined;this.notice('Room learning finished.','success');}
+        this.checkLearningResult();
         if(changed&&!this.drag){this.renderList();if(!this.inside('#inspector'))this.renderInspector();}
         if(this.panel==='settings'&&!this.inside('#settings'))this.renderSettings();
         this.renderMap();this.renderLive();this.renderButtons();
@@ -638,12 +639,27 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         catch(error){this.notice(error?.message??String(error),'error');return false;}
     }
     // Learning needs an empty room, so the first press only asks.
+    checkLearningResult(){
+        const time=this.state('sensor','learning_result_time');
+        if(this.learnBefore===undefined||typeof time!=='string'||!time.endsWith('Z')||!Number.isFinite(Date.parse(time))||Date.parse(time)<=Date.parse(this.learnBefore)||this.state('sensor','learning_state')!=='result_received')return false;
+        const code=this.state('sensor','learning_result_code');
+        if(code==null||code===''||!Number.isInteger(Number(code))||Number(code)<0||Number(code)>255)return false;
+        clearTimeout(this.learnResultTimer);this.learnBefore=undefined;
+        this.notice(`Room learning result received (code ${Number(code)}). The code's meaning has not been verified.`);
+        return true;
+    }
     async learn(){
+        if(this.learnBefore!==undefined)return;
         clearTimeout(this.learnTimer);
-        if(!this.learnArmed){this.learnArmed=true;this.learnTimer=setTimeout(()=>{this.learnArmed=false;this.renderSettings();},8000);this.notice('Leave the room empty, then press again. It takes about 10 seconds.');this.renderSettings();return;}
+        if(!this.learnArmed){this.learnArmed=true;this.learnTimer=setTimeout(()=>{this.learnArmed=false;this.renderSettings();},8000);this.notice('Leave the room empty, then press again. Wait for a result from the sensor.');this.renderSettings();return;}
         this.learnArmed=false;this.renderSettings();
-        const before=this.state('sensor','learning_result_time');
-        if(await this.press('spatial_learning','Learning the room. Stay out for about 10 seconds.'))this.learnBefore=before;
+        this.learnBefore=this.state('sensor','learning_result_time')??'';
+        try{
+            await this._hass.callService('button','press',{entity_id:this.entity('button','spatial_learning')});
+            if(this.learnBefore===undefined||this.checkLearningResult())return;
+            this.notice('Learning requested. Keep the room empty while waiting for the sensor result.');
+            this.learnResultTimer=setTimeout(()=>{this.learnBefore=undefined;this.notice('No learning result received yet. Read the sensor settings before trying again.','error');},30000);
+        }catch(error){this.learnBefore=undefined;this.notice(error?.message??String(error),'error');}
     }
     // The sensor drops the track; a real person is picked up again within seconds.
     async forgetTarget(id){
