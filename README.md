@@ -76,9 +76,67 @@ Or in YAML:
 ```yaml
 type: custom:fp400-zone-card
 device: living_room_fp400 # optional
+mqtt_base_topic: zigbee2mqtt # optional
+mqtt_friendly_name: living_room_fp400 # optional topic override
 ```
 
 `device` is the start of your FP400's entity IDs, the part before `_software_zone_1_config`, or its IEEE address. You only need it when you have more than one FP400. The card finds its entities by Zigbee2MQTT's fixed IDs, so renaming the sensor or its entities in Home Assistant doesn't break it; with an old `device:` name, it tells you which name to use.
+
+## Live MQTT tracking and Recorder size
+
+The converter still publishes all FP400 position and configuration values to the
+normal Zigbee2MQTT MQTT device topic. On new Home Assistant installations, only
+four **high-volume tracking entities are disabled by default**:
+`targets_xy`, `tracking_last_update`, `tracking_last_frame` and `motion_last_frame`.
+
+The low-frequency diagnostics `tracking_status`, `interference_mask_hex`,
+`entry_exit_mask_hex`, `edge_mask_hex` and `learning_result_time` stay enabled.
+This keeps the Areas editor usable for non-admin users and makes the saved region
+masks available immediately when the card opens, without waiting for MQTT traffic.
+
+The zone card reads live coordinates, status, area masks and learning completion
+using Home Assistant's `mqtt/subscribe` WebSocket API, which **requires a Home
+Assistant administrator account**. Unlike a separate browser-to-broker connection,
+this reuses your authenticated HA connection and needs no broker credentials in
+Lovelace. The card uses the Zigbee2MQTT discovery name from `hass.devices[device_id].name`
+to find the device topic. Renaming the device *within HA* does not change that name.
+No subscription to the potentially huge `zigbee2mqtt/bridge/devices` list is needed.
+If Zigbee2MQTT uses an HA discovery name different from its MQTT friendly name,
+set `mqtt_friendly_name` explicitly in the card YAML. Use `mqtt_base_topic` if
+Zigbee2MQTT is configured with a custom MQTT base topic.
+
+**Non-admin dashboard users:** Ordinary zone automations, configuration controls
+and the Areas editor continue to work with their enabled HA entities. To show
+live target dots, manually enable `targets_xy` and `tracking_last_update` under
+**Settings > Devices & services > Entities**. The card automatically falls back to
+these HA states and shows a visible message naming the missing live-position
+entities instead of suggesting a mounting problem. Exclude the two re-enabled
+high-frequency sensors from Recorder if you want to keep history small.
+
+Zone occupancy, zone count, movement/activity sensors, events and configuration
+controls remain enabled for use in automations. Configuration writes continue via
+Home Assistant entity services, not direct MQTT publishes.
+
+**Existing installations:** Zigbee2MQTT's discovery `enabled_by_default: false`
+does not turn off entities that were enabled previously. Disable them manually,
+or exclude them from Recorder. For example:
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*_targets_xy
+      - sensor.*_tracking_last_update
+      - sensor.*_tracking_last_frame
+      - sensor.*_motion_last_frame
+```
+
+Restart Home Assistant after changing Recorder configuration. Existing history is
+not deleted when an entity is disabled; use targeted `recorder.purge_entities` to
+purge old values, and `recorder.purge` with `repack: true` to reclaim disk space
+on SQLite. Repacking requires spare disk space. Zigbee2MQTT's default
+`advanced.cache_state: true` keeps the most recent values in its MQTT state
+payload, including values that Home Assistant has not discovered as entities.
 
 ## Using it
 

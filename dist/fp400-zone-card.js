@@ -151,7 +151,9 @@ export function registryFp400s(entries){
     const devices={};
     for(const [entityId,e] of Object.entries(entries??{})){
         const m=/^(0x[0-9a-f]{16})_(.+)_zigbee2mqtt$/.exec(e?.unique_id??'');if(!m)continue;
-        (devices[m[1]]??={ieee:m[1],keys:{}}).keys[`${entityId.split('.')[0]}.${m[2]}`]=entityId;
+        const device=devices[m[1]]??={ieee:m[1],deviceId:null,keys:{}};
+        if(e?.device_id)device.deviceId=e.device_id;
+        device.keys[`${entityId.split('.')[0]}.${m[2]}`]=entityId;
     }
     return Object.values(devices).filter(d=>d.keys['text.software_zone_1_config'])
         .map(d=>({...d,label:/^text\.([a-z0-9_]+)_software_zone_1_config$/.exec(d.keys['text.software_zone_1_config'])?.[1]??d.ieee}));
@@ -167,6 +169,7 @@ const STYLE=`
 :host{display:block;height:100%;--ink:#eef5f6;--muted:#93a8b5;--line:#2b3d49;--accent:#67e4b8;font-family:Inter,system-ui,-apple-system,sans-serif;color:var(--ink)}
 *{box-sizing:border-box}button,input,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.4;cursor:not-allowed}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}ha-card{display:flex;flex-direction:column;background:#101b24;border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 12px 45px #0002;margin:8px auto;max-width:1440px;height:calc(100dvh - 80px);color:var(--ink)}
 header{padding:16px 24px 14px;display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--line);flex-shrink:0}.eyebrow{font-size:10px;font-weight:750;letter-spacing:2px;color:var(--accent);margin-bottom:5px}h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.6px}.subtitle{font-size:12px;color:var(--muted);margin-top:5px}.header-actions{display:flex;gap:8px;align-items:center}.live{display:flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap;border:1px solid var(--line);border-radius:30px;padding:8px 12px}.live i{width:7px;height:7px;background:#83929c;border-radius:50%}.live.fresh i{background:var(--accent);box-shadow:0 0 12px #67e4b844}.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;flex:1;min-height:0;overflow:hidden}.canvas-panel{min-width:0;background:#101d27;display:flex;flex-direction:column;overflow:hidden}.toolbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;gap:10px;border-bottom:1px solid var(--line);flex-shrink:0}.toolbar-group{display:flex;gap:6px;align-items:center}.btn{color:var(--ink);border:1px solid var(--line);background:#182833;border-radius:9px;padding:8px 12px;font-size:12px;font-weight:600;min-height:36px}.btn:hover:not(:disabled){background:#253b47}.btn.active{border-color:var(--accent);color:var(--accent);background:#173b35}.btn.primary{background:var(--accent);color:#09261b;border:0}.btn.primary:hover:not(:disabled){background:#89f1cd}.btn.icon{min-width:36px;padding:6px;font-size:16px}.btn.danger{color:#ffa5ae}.btn.subtle{background:transparent;border-color:transparent;color:var(--muted)}.map-wrap{flex:1;min-height:240px;position:relative;overflow:hidden;--rw:34px;--rh:22px}.map-canvas{position:absolute;top:0;left:var(--rw);right:0;bottom:var(--rh);overflow:hidden}.ruler-y,.ruler-x,.ruler-corner{position:absolute;pointer-events:none;background:#0d1820;color:#7a8f9c;font-size:9px;font-weight:600;letter-spacing:.3px}.ruler-y{top:0;bottom:var(--rh);left:0;width:var(--rw);border-right:1px solid var(--line)}.ruler-x{bottom:0;left:var(--rw);right:0;height:var(--rh);border-top:1px solid var(--line)}.ruler-corner{bottom:0;left:0;width:var(--rw);height:var(--rh);border-right:1px solid var(--line);border-top:1px solid var(--line)}.tick{position:absolute;white-space:nowrap;font-variant-numeric:tabular-nums}.ruler-y .tick{right:4px;text-align:right;transform:translateY(-50%)}.ruler-y .tick::after{content:"";position:absolute;right:-4px;top:50%;width:5px;height:1px;background:#4b6472}.ruler-y .tick.minor::after{width:3px;background:#3a5260}.ruler-x .tick{top:4px;text-align:center;transform:translateX(-50%);min-width:24px}.ruler-x .tick::before{content:"";position:absolute;top:-4px;left:50%;width:1px;height:4px;background:#4b6472;transform:translateX(-50%)}.ruler-x .tick.minor::before{height:3px;background:#3a5260}.map{width:100%;height:100%;display:block;touch-action:none;user-select:none;outline:none;cursor:grab}.map.draw,.map.areas{cursor:crosshair}.map.panning{cursor:grabbing}.map .zone-shape{cursor:move}.map .handle{cursor:nwse-resize}.map text{pointer-events:none;font-family:inherit}.map .target,.map .area-cell,.map .area-pending,.map .area-preview{pointer-events:none}.map.areas .area-pending{pointer-events:auto;cursor:pointer}.map:not(.draw):not(.areas) .target .hit{pointer-events:auto;cursor:pointer}.map .area-cell.gone{opacity:.22}.legend{display:flex;justify-content:space-between;gap:12px;padding:10px 20px;color:var(--muted);font-size:11px;border-top:1px solid var(--line);flex-shrink:0}.legend span{display:flex;gap:7px;align-items:center}.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#fff}.sidebar{background:#14222c;border-left:1px solid var(--line);padding:18px 18px 18px;display:flex;flex-direction:column;gap:16px;overflow-y:auto;min-height:0}.sidebar.show-settings>section:not(.settings),.sidebar:not(.show-settings)>.settings{display:none}.section-title{display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:750;letter-spacing:1.6px;color:var(--muted);margin:0 0 11px}.section-title span{letter-spacing:0;font-weight:400}.zone-list,.area-types{display:flex;flex-direction:column;gap:7px}.zone-row,.area-type{display:flex;align-items:center;gap:10px;width:100%;padding:12px 11px;text-align:left;color:var(--ink);background:#192b36;border:1px solid transparent;border-radius:10px}.zone-row.selected{border-color:var(--zone-color);background:#21353f}.area-type.selected{border-color:var(--area-color);background:#21353f}.zone-row .swatch,.area-type .swatch{width:9px;height:28px;border-radius:5px;background:var(--zone-color);flex-shrink:0}.area-type .swatch{background:repeating-linear-gradient(45deg,var(--area-color) 0 2px,transparent 2px 5px);border:1px solid var(--area-color)}.zone-row .zone-info{flex:1;min-width:0}.zone-row strong,.area-type strong{font-size:13px;font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.zone-row small,.area-type small{display:block;color:var(--muted);font-size:10px;margin-top:4px}.zone-row .dot{width:6px;height:6px;border-radius:50%;background:var(--zone-color)}.empty{font-size:12px;color:var(--muted);line-height:1.7;padding:18px 2px}.inspector{border-top:1px solid var(--line);padding-top:18px}.field{display:block;margin-bottom:13px;font-size:11px;color:var(--muted)}.field input,.field select,.setting select,.setting input[type=number]{display:block;width:100%;margin-top:6px;background:#0f1d27;color:var(--ink);border:1px solid var(--line);border-radius:8px;min-height:40px;padding:8px 10px;font-size:13px;outline-offset:1px}.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fields .field{margin:0 0 12px}.inspector .btn{width:100%;margin-top:5px}.segmented{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px}.area-panel{margin-top:18px;padding-top:16px;border-top:1px dashed var(--line)}.area-chips{display:flex;flex-wrap:wrap;gap:6px}.area-chip{display:flex;align-items:center;gap:6px;font-size:11px;padding:4px 9px;border-radius:20px;background:#192b36}.area-chip i{width:8px;height:8px;border-radius:2px;background:var(--area-color)}.small-note{font-size:10px;color:var(--muted);line-height:1.6}.settings{display:flex;flex-direction:column}.settings-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.settings-head .section-title{margin:0}.settings .section-title{margin-top:14px}.setting{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;padding:5px 0}.setting select,.setting input[type=number]{width:140px;flex-shrink:0;margin:0;min-height:34px;padding:6px 8px;font-size:12px}.setting.toggle input{appearance:none;-webkit-appearance:none;width:36px;height:20px;margin:0;border-radius:20px;background:#2b3d49;position:relative;cursor:pointer;flex-shrink:0}.setting.toggle input::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#93a8b5;transition:left .15s}.setting.toggle input:checked{background:#1f5a49}.setting.toggle input:checked::after{left:19px;background:var(--accent)}.setting input:disabled,.setting select:disabled{opacity:.45;cursor:not-allowed}.settings .btn{width:100%;margin-top:6px}.settings .settings-head .btn{width:auto;margin:0;min-height:30px;min-width:30px;font-size:13px}.footer{display:flex;gap:15px;align-items:center;justify-content:space-between;padding:12px 20px;border-top:1px solid var(--line);background:#14232c;flex-shrink:0}.footer-actions{display:flex;gap:8px}.message{font-size:12px;color:var(--muted);line-height:1.5}.message.error{color:#ffa5ae}.message.success{color:var(--accent)}.shortcut{color:#718997;font-size:10px}.snap-select{background:#142630;color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:11px;min-height:38px}.count-pill{font-size:10px;padding:3px 7px;border-radius:20px;background:#233945;color:var(--muted)}
+.tracking-help:not([hidden]){padding:10px 20px;background:#3a2631;color:#ffc2ce;font-size:12px;line-height:1.5;border-bottom:1px solid #67404b;overflow-wrap:anywhere}
 @media(max-width:760px){:host{height:auto}ha-card{height:auto;display:block;margin:0;border-radius:16px}header{padding:16px}h1{font-size:20px}.subtitle{font-size:10px}.main{grid-template-columns:1fr;display:block;flex:none;overflow:visible}.canvas-panel{display:block;overflow:visible}.sidebar{border-left:0;border-top:1px solid var(--line);padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px;overflow:visible}.sidebar.show-settings{grid-template-columns:1fr}.inspector{padding-top:0;border-top:0}.map-wrap{flex:none;height:52vh;min-height:340px;max-height:520px}.toolbar{padding:10px;flex-wrap:wrap}.toolbar .btn{padding:8px 10px}.legend{padding:12px;font-size:10px}.footer{padding:12px 16px;align-items:flex-start;flex-direction:column}.footer-actions{align-self:flex-end}.live{padding:7px 9px;font-size:10px}.shortcut,.legend .shortcut{display:none}}
 @media(max-width:420px){.sidebar{grid-template-columns:1fr}.zone-list{display:grid;grid-template-columns:1fr 1fr}.inspector{border-top:1px solid var(--line);padding-top:16px}.map-wrap{min-height:320px}.toolbar-group{gap:4px}.btn{font-size:11px}.subtitle{max-width:225px;line-height:1.5}.live{max-width:116px;white-space:normal}.header-actions .label{display:none}}
 `;
@@ -175,13 +178,22 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     constructor(){
         super();this.attachShadow({mode:'open'});this.saved={};this.drafts={};this.base={};this.dirty=new Set();this.loaded=new Set();this.selected=null;this.mode='select';this.snap=50;this.view={x:-300,y:-50,width:600,height:600};this.saving=false;
         this.panel='zones';this.areaType='interference';this.areaTool='add';this.pendingAreas=[];this.pendingClears=new Set();this.target=null;this.targetAt=null;this.forgetting=null;this.busy={};this.rotation=0;this.loadingGrace=15000;this.uid=`fp${Math.random().toString(36).slice(2)}`;
+        this.mqttBaseTopic='zigbee2mqtt';this.mqttFriendlyName=null;this.mqttGeneration=0;
+        this.mqttKey=null;this.mqttTopic=null;this.mqttConnection=null;this.mqttUnsub=null;
+        this.mqttFailedKey=null;this.mqttFailedConnection=null;this.liveTracking=null;
     }
     // No device in the stub: the card finds the FP400 itself, so renaming the sensor later cannot break it.
     static getStubConfig(){return {};}
     setConfig(config){
         const device=config.device==null||config.device===''?null:String(config.device).toLowerCase();
         if(device!==null&&!/^[a-z0-9_]+$/.test(device))throw new Error('device must be the start of your FP400 entity IDs, for example living_room_fp400 or 0x54ef440000000001.');
+        const mqttBaseTopic=config.mqtt_base_topic==null?'zigbee2mqtt':String(config.mqtt_base_topic).trim().replace(/\/+$/,'');
+        const mqttFriendlyName=config.mqtt_friendly_name==null?null:String(config.mqtt_friendly_name);
+        if(!mqttBaseTopic||/[#+]/.test(mqttBaseTopic))throw new Error('mqtt_base_topic must be non-empty and must not contain MQTT wildcards.');
+        if(mqttFriendlyName!==null&&(!mqttFriendlyName.trim()||/[#+]/.test(mqttFriendlyName)))throw new Error('mqtt_friendly_name must be non-empty and must not contain MQTT wildcards.');
+        this.mqttBaseTopic=mqttBaseTopic;this.mqttFriendlyName=mqttFriendlyName;
         this.config={...config,device};this.resolvedAt=0;this.resolveDevice();this.watchedFor=undefined;if(!this.mounted)this.mount();if(this._hass)this.sync();
+        void this.ensureTrackingSubscription();
     }
     get device(){return this.fp?.label??this.config?.device??null;}
     // The FP400s Home Assistant knows: from the entity registry once it was read, else by their usual entity IDs.
@@ -228,6 +240,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         let changed=!this.seen;this.seen??=new Map();
         for(const id of this.watched){const s=value.states?.[id];if(this.seen.get(id)!==s){this.seen.set(id,s);changed=true;}}
         if(changed)this.sync();
+        void this.ensureTrackingSubscription();
     }
     watchedEntities(){
         const keys=[['sensor','targets_xy'],['sensor','tracking_status'],['sensor','tracking_last_update'],['text','remove_target'],['sensor','learning_result_time'],['button','spatial_learning'],['button','refresh_configuration']];
@@ -237,8 +250,76 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         return keys.map(([domain,key])=>this.entity(domain,key));
     }
     get hass(){return this._hass;}
-    connectedCallback(){this.clock??=setInterval(()=>{if(this.mounted)this.renderLive();},1000);if(this.mounted)this.resizeObs?.observe(this.svg);}
-    disconnectedCallback(){clearInterval(this.clock);this.clock=null;clearTimeout(this.learnTimer);this.resizeObs?.disconnect();}
+    // The HA device's discovery name is normally Zigbee2MQTT's MQTT friendly name.
+    // Do NOT use name_by_user, which reflects only the user's HA rename. Advanced
+    // Zigbee2MQTT setups can override the topic with mqtt_friendly_name.
+    mqttDeviceTopic(){
+        const haName=this.fp?.deviceId&&this._hass?.devices?.[this.fp.deviceId]?.name;
+        const friendly=this.mqttFriendlyName??(typeof haName==='string'&&haName?haName:this.device);
+        if(typeof friendly!=='string'||!friendly.trim()||/[#+]/.test(friendly))return null;
+        return `${this.mqttBaseTopic}/${friendly}`;
+    }
+    stopTrackingSubscription(){
+        this.mqttGeneration=(this.mqttGeneration??0)+1;
+        try{this.mqttUnsub?.();}catch{/* Connection may already be closed. */}
+        this.mqttUnsub=null;this.mqttKey=null;this.mqttTopic=null;this.mqttConnection=null;this.liveTracking=null;
+    }
+    // HA's MQTT WebSocket command requires administrator privileges. A single
+    // per-device subscription replaces the noisy tracking/mask/learning entities.
+    async ensureTrackingSubscription(){
+        const connection=this._hass?.connection;
+        const topic=this.isConnected&&this._hass?.user?.is_admin&&connection?.subscribeMessage?this.mqttDeviceTopic():null;
+        if(!topic){if(this.mqttKey)this.stopTrackingSubscription();return;}
+        if(this.mqttKey===topic&&this.mqttConnection===connection)return;
+        this.stopTrackingSubscription();
+        if(this.mqttFailedKey===topic&&this.mqttFailedConnection===connection)return;
+        this.mqttKey=topic;this.mqttTopic=topic;this.mqttConnection=connection;
+        const generation=this.mqttGeneration;
+        try{
+            const unsubscribe=await connection.subscribeMessage(message=>{
+                if(this.mqttGeneration!==generation||this.mqttTopic!==topic)return;
+                let data;
+                try{data=JSON.parse(message.payload);}catch{return;}
+                if(!data||typeof data!=='object'||Array.isArray(data))return;
+                const keys=['targets_xy','tracking_last_update','tracking_status',
+                    'interference_mask_hex','entry_exit_mask_hex','edge_mask_hex','learning_result_time']
+                    .filter(key=>Object.hasOwn(data,key));
+                if(!keys.length)return;
+                const next={...this.liveTracking};let editorChanged=false,positionsChanged=false;
+                for(const key of keys){
+                    if(next[key]===data[key])continue;
+                    next[key]=data[key];
+                    if(key.endsWith('_mask_hex')||key==='learning_result_time')editorChanged=true;
+                    else positionsChanged=true;
+                }
+                if(!editorChanged&&!positionsChanged)return;
+                this.liveTracking=next;
+                // The expensive editor redraw is only needed for low-frequency
+                // mask/learning changes. Positions update just the live overlay.
+                if(editorChanged)this.sync();else this.renderLive();
+            },{type:'mqtt/subscribe',topic});
+            if(this.mqttGeneration!==generation||this.mqttTopic!==topic){unsubscribe?.();return;}
+            this.mqttUnsub=unsubscribe;
+            this.mqttFailedKey=null;this.mqttFailedConnection=null;
+        }catch{
+            if(this.mqttGeneration!==generation||this.mqttTopic!==topic)return;
+            this.mqttFailedKey=topic;this.mqttFailedConnection=connection;
+            this.stopTrackingSubscription();
+            this.notice('Live MQTT subscription failed. Verify the Home Assistant MQTT integration, or enable the tracking entities.','error');
+        }
+    }
+    trackingValue(key){return this.liveTracking?.[key]??this.state('sensor',key);}
+    liveTrackingHelp(){
+        const keys=['targets_xy','tracking_last_update','tracking_status'];
+        const missing=keys.filter(key=>!this.available('sensor',key));
+        if(!missing.length)return null;
+        const names=missing.map(key=>this.entity('sensor',key)).join(', ');
+        if(!this._hass?.user?.is_admin)return `Live dots need a Home Assistant administrator account, or enable these HA entities: ${names}.`;
+        if(this.mqttFailedKey||!this._hass?.connection?.subscribeMessage)return `Live MQTT is unavailable. Check the HA MQTT integration or enable these entities: ${names}.`;
+        return null;
+    }
+    connectedCallback(){this.clock??=setInterval(()=>{if(this.mounted)this.renderLive();},1000);if(this.mounted)this.resizeObs?.observe(this.svg);void this.ensureTrackingSubscription();}
+    disconnectedCallback(){clearInterval(this.clock);this.clock=null;clearTimeout(this.learnTimer);this.resizeObs?.disconnect();this.stopTrackingSubscription();}
     entity(domain,key){return this.fp?.keys?.[`${domain}.${key}`]??`${domain}.${this.device}_${key}`;}
     state(domain,key){return this._hass?.states?.[this.entity(domain,key)]?.state;}
     available(domain,key){return !['unavailable',undefined].includes(this.state(domain,key));}
@@ -246,6 +327,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     mount(){
         this.shadowRoot.innerHTML=`<style>${STYLE}</style><ha-card>
 <header><div><div class="eyebrow">AQARA FP400 · SPATIAL CONTROL</div><h1>Room zones</h1><div class="subtitle">Draw your room. Give every space its own presence sensor.</div></div><div class="header-actions"><div class="live" id="live"><i></i><span>Connecting</span></div><button class="btn" data-action="settings" aria-label="Sensor settings">⚙<span class="label"> Settings</span></button></div></header>
+<div id="tracking-help" class="tracking-help" hidden></div>
 <div class="main"><section class="canvas-panel"><div class="toolbar"><div class="toolbar-group"><button class="btn" data-action="draw">＋ Draw zone</button><button class="btn" data-action="areas">▦ Areas</button></div><div class="toolbar-group"><label><span class="shortcut">Snap </span><select class="snap-select" id="snap" aria-label="Grid snap"><option value="50">0.5 m grid</option><option value="10">0.1 m grid</option><option value="0">Free draw</option></select></label><button class="btn icon" data-action="zoom-in" aria-label="Zoom in">＋</button><button class="btn icon" data-action="zoom-out" aria-label="Zoom out">−</button><button class="btn" data-action="fit">Fit</button></div></div>
 <div class="map-wrap"><div class="map-canvas"><svg class="map" tabindex="0" aria-label="Room map. Drag empty space to pan, wheel to zoom, drag a zone to move it, drag corners to resize, click a dot to inspect a target." role="img"><defs><pattern id="${this.uid}-small" width="50" height="50" patternUnits="userSpaceOnUse"><path d="M 50 0 L 0 0 0 50" fill="none" stroke="#2a3c48" stroke-width=".6" vector-effect="non-scaling-stroke"/></pattern><pattern id="${this.uid}-large" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#${this.uid}-small)"/><path d="M 100 0 L 0 0 0 100" fill="none" stroke="#38505c" stroke-width=".7" vector-effect="non-scaling-stroke"/></pattern>${Object.entries(AREAS).map(([type,a])=>areaPattern(this.uid,type,a.color)).join('')}<clipPath id="${this.uid}-range"><rect id="range" x="-400" y="-1000" width="800" height="1050"/></clipPath></defs><rect x="-3000" y="-3000" width="6000" height="6000" fill="#101d27"/><rect x="-3000" y="-3000" width="6000" height="6000" fill="url(#${this.uid}-large)" clip-path="url(#${this.uid}-range)"/><g id="sensor-frame"><rect id="range-outline" x="-400" y="-1000" width="800" height="1050" fill="none" stroke="#4b6472" stroke-dasharray="4 6" vector-effect="non-scaling-stroke" visibility="hidden"/><path d="M 0 0 L -400 -700 M 0 0 L 400 -700" stroke="#67e4b819" fill="none" stroke-dasharray="5 7" vector-effect="non-scaling-stroke"/><g id="areas"></g></g><g id="zones"></g><g id="sensor"></g><g id="targets"></g><g id="pending-areas"></g></svg></div><div class="ruler-y" id="ruler-y"></div><div class="ruler-x" id="ruler-x"></div><div class="ruler-corner"></div></div>
 <div class="legend"><span><i></i>Live target positions</span><span id="map-hint">Drag the grid to pan · wheel to zoom · click a zone to select</span><span class="shortcut">Arrow keys nudge · Esc cancels</span></div></section>
@@ -291,13 +373,13 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         const areas=Object.keys(AREAS).map(t=>`${this.areaMask(t)}${this.areaReady(t)}${this.available('text',`${t}_zone_remove`)}`).join();
         if(areas!==this.lastAreas){this.lastAreas=areas;changed=true;}
         // The result time comes from the server's clock, so watch for it to change rather than comparing clocks.
-        if(this.learnBefore!==undefined&&this.state('sensor','learning_result_time')!==this.learnBefore){this.learnBefore=undefined;this.notice('Room learning finished.','success');}
+        if(this.learnBefore!==undefined&&this.trackingValue('learning_result_time')!==this.learnBefore){this.learnBefore=undefined;this.notice('Room learning finished.','success');}
         if(changed&&!this.drag){this.renderList();if(!this.inside('#inspector'))this.renderInspector();}
         if(this.panel==='settings'&&!this.inside('#settings'))this.renderSettings();
         this.renderMap();this.renderLive();this.renderButtons();
     }
-    targets(){return parseTargets(this.state('sensor','targets_xy'));}
-    fresh(){const time=Date.parse(this.state('sensor','tracking_last_update'));return ['valid','partial'].includes(this.state('sensor','tracking_status')) && Number.isFinite(time) && Date.now()-time<30000;}
+    targets(){return parseTargets(this.trackingValue('targets_xy'));}
+    fresh(){const time=Date.parse(this.trackingValue('tracking_last_update'));return ['valid','partial'].includes(this.trackingValue('tracking_status')) && Number.isFinite(time) && Date.now()-time<30000;}
     // A zone shows a state whenever the converter has one (fresh positions, or held by the sensor's own presence).
     zoneLive(id){return this.state('binary_sensor',`software_zone_${id}_available`)==='on';}
     notice(text,type=''){if(!this.mounted)return;const el=this.shadowRoot.querySelector('#message');el.textContent=text;el.className=`message ${type}`;}
@@ -351,7 +433,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     }
     // An area type can be edited when its controls exist and its current mask is known.
     areaReady(type){return this.available('text',`${type}_zone_add`)&&this.available('text',`${type}_clear`)&&maskBits(this.areaMask(type))!==null;}
-    areaMask(type){return this.state('sensor',`${type}_mask_hex`)??this.state('text',`${type}_mask_hex`);}
+    areaMask(type){return this.trackingValue(`${type}_mask_hex`)??this.state('text',`${type}_mask_hex`);}
     draftBits(type){return draftMask(maskBits(this.areaMask(type)),this.pendingClears.has(type),this.pendingAreas.filter(o=>o.type===type));}
     freeId(){for(let id=1;id<=8;id++)if(this.loaded.has(id)&&!this.drafts[id])return id;return null;}
     point(event){const p=this.svg.createSVGPoint();p.x=event.clientX;p.y=event.clientY;const m=this.svg.getScreenCTM();if(!m)return {x:0,y:0};const v=p.matrixTransform(m.inverse());return {x:v.x,y:-v.y};}
@@ -525,10 +607,12 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     renderLive(){
         if(!this.mounted)return;
         const fresh=this.fresh(),targets=fresh?this.targets():[],live=this.shadowRoot.querySelector('#live');
-        const held=!fresh&&this.state('sensor','tracking_status')==='held';
-        live.classList.toggle('fresh',fresh);live.querySelector('span').textContent=fresh?`Live · ${targets.length} target${targets.length===1?'':'s'}`:held?'Positions paused':'Positions unavailable';
-        live.title=fresh?'':held?'No new positions: nobody is moving, or the sensor paused them. Zones keep their last state while the sensor still detects someone, and empty when it detects nobody.'
-            :'No position reports from the sensor in the last 30 seconds. Check that the FP400 is online in Zigbee2MQTT. If this lasts, set Mounted on and Wall position in Settings.';
+        const help=this.liveTrackingHelp(),helpEl=this.shadowRoot.querySelector('#tracking-help');
+        if(helpEl){helpEl.hidden=!help;if(help)helpEl.textContent=help;}
+        const held=!fresh&&this.trackingValue('tracking_status')==='held';
+        live.classList.toggle('fresh',fresh);live.querySelector('span').textContent=help?'Live dots need admin or sensors':fresh?`Live · ${targets.length} target${targets.length===1?'':'s'}`:held?'Positions paused':'Positions unavailable';
+        live.title=help??(fresh?'':held?'No new positions: nobody is moving, or the sensor paused them. Zones keep their last state while the sensor still detects someone, and empty when it detects nobody.'
+            :'No position reports from the sensor in the last 30 seconds. Check that the FP400 is online in Zigbee2MQTT. If this lasts, set Mounted on and Wall position in Settings.');
         const scale=this.view.width/700,seen=targets.find(t=>t.id===this.target);
         if(seen)this.targetAt={x:seen.x,y:seen.y};
         let html=targets.map(t=>{const sel=t.id===this.target,v=turn(t,-this.rotation);return `<g class="target" data-target="${t.id}"><circle class="hit" cx="${v.x}" cy="${-v.y}" r="${15*scale}" fill="${sel?'#ff6b7830':'#ffffff12'}"${sel?' stroke="#ff9aa5" stroke-width="1.5" vector-effect="non-scaling-stroke"':''}/><circle cx="${v.x}" cy="${-v.y}" r="${6*scale}" fill="#f6fbff" stroke="#142731" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="${v.x+11*scale}" y="${-v.y-11*scale}" fill="#fff" font-size="${10*scale}">${t.id+1}</text></g>`;}).join('');
@@ -597,7 +681,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     renderSettings(){
         if(!this.mounted||this.panel!=='settings')return;
         const groups=SETTINGS.map(([title,items])=>{const rows=items.map(item=>this.settingRow(...item)).join('');return rows?`<h2 class="section-title">${title.toUpperCase()}</h2>${rows}`:'';}).join('');
-        const learned=Date.parse(this.state('sensor','learning_result_time')),room=[];
+        const learned=Date.parse(this.trackingValue('learning_result_time')),room=[];
         if(this.available('button','spatial_learning'))room.push(`<button class="btn" data-action="learn">${this.learnArmed?'Room empty? Press again to start':'Learn the empty room'}</button><p class="small-note">Teaches the sensor what your empty room looks like. ${Number.isFinite(learned)?`Last done ${new Date(learned).toLocaleString()}.`:''}</p>`);
         if(this.available('button','refresh_configuration'))room.push(`<button class="btn" data-action="refresh">Read settings from the sensor</button>`);
         setHtml(this.shadowRoot.querySelector('#settings'),`<div class="settings-head"><h2 class="section-title">SENSOR SETTINGS</h2><button class="btn icon" data-action="settings" aria-label="Close settings">✕</button></div>${groups||'<div class="empty">No settings found. Update the FP400 converter in Zigbee2MQTT.</div>'}${room.length?`<h2 class="section-title">ROOM</h2>${room.join('')}`:''}<p class="small-note">Changes apply right away.</p>`);
@@ -642,7 +726,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         clearTimeout(this.learnTimer);
         if(!this.learnArmed){this.learnArmed=true;this.learnTimer=setTimeout(()=>{this.learnArmed=false;this.renderSettings();},8000);this.notice('Leave the room empty, then press again. It takes about 10 seconds.');this.renderSettings();return;}
         this.learnArmed=false;this.renderSettings();
-        const before=this.state('sensor','learning_result_time');
+        const before=this.trackingValue('learning_result_time');
         if(await this.press('spatial_learning','Learning the room. Stay out for about 10 seconds.'))this.learnBefore=before;
     }
     // The sensor drops the track; a real person is picked up again within seconds.
