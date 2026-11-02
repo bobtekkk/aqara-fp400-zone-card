@@ -84,6 +84,6 @@ if(params.has('registry')||params.has('renamed')){
 }
 if(params.has('held')){set('sensor','tracking_status','held');set('binary_sensor','software_zone_1_available','on');}
 card.setConfig(params.has('auto')?{}:{device:params.get('device')??device});
-function update(){if(!params.has('offline'))set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};}
+function update(){if(params.has('offline'))set('sensor','tracking_last_update','unavailable');else set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};}
 update();setInterval(update,Number(params.get('tick')??3000));
 </script></body></html>

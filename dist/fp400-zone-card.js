@@ -311,7 +311,8 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     trackingValue(key){return this.liveTracking?.[key]??this.state('sensor',key);}
     liveTrackingHelp(){
         const keys=['targets_xy','tracking_last_update','tracking_status'];
-        const missing=keys.filter(key=>!this.available('sensor',key));
+        // Only entities HA doesn't have (disabled) need turning on; unavailable ones are just offline.
+        const missing=keys.filter(key=>this.state('sensor',key)===undefined);
         if(!missing.length)return null;
         const names=missing.map(key=>this.entity('sensor',key)).join(', ');
         if(!this._hass?.user?.is_admin)return `Live dots need a Home Assistant administrator account, or enable these HA entities: ${names}.`;
