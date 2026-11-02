@@ -28,7 +28,7 @@ test('an announcement bypasses retry backoff and a new user setting wins',async(
 test('a failed persistent save is visible and retried without losing the confirmed value',async(t)=>{
     let now=1000000;t.mock.method(Date,'now',()=>now);
     const d=fp400Sensor('retry-database');await fp400Poll(d);d.saveFails=true;
-    await assert.rejects(set(d,'absence_timeout',5),/Database write failed/);
+    await set(d,'absence_timeout',5); // the sensor took it, so the user's write succeeds
     assert.match((await status(d)).restore_error,/Database write failed/);
     d.saveFails=false;now+=10000;await fp400Poll(d);assert.equal((await status(d)).restore_status,'complete');
     d.powerCut();await announce(d);await fp400Poll(d);assert.equal(d.get(1,'msOccupancySensing',3),5);

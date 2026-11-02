@@ -263,8 +263,9 @@ async function remember(device, setting, raw) {
     try {await device.save?.(); persistencePending.delete(device.ieeeAddr);}
     catch (error) {
         persistencePending.add(device.ieeeAddr);restoreChecked.delete(device.ieeeAddr);
+        // The sensor took the setting, so the write still succeeds; the next poll saves it again.
         updateRestoreProgress(device, {status:'pending', error:`Configuration backup: ${error.message}`, attempt:0, nextAt:Date.now()+10000});
-        throw error; // The sensor accepted it, but a durable backup was not confirmed.
+        logger.warning(`FP400 '${device.ieeeAddr}': could not save the setting backup, trying again soon: ${error.message}`, NS);
     }
 }
 async function readSetting(device, setting) {
