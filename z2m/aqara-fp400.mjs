@@ -636,12 +636,13 @@ export class SoftwareZoneTracker {
     constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.still=new Map();this.awaiting=new Set();this.invalid=false;this.partial=false;this.presence=undefined;}
     // Returns the targets that entered or left each zone with this frame. When the report was cut short
     // (reported > targets.length), targets missing from it are assumed to stay where they were last seen;
-    // missing positions cannot start or continue an absence countdown, even if their old positions are known.
+    // if even that cannot account for every target, no zone counts down to empty (a running countdown stops).
     accept(targets, now, reported = targets.length) {
         this.lastAt=now;this.invalid=false;
         const decoded=new Set(targets.map(t=>t.id)),missing=reported-targets.length;
         this.partial=missing>0;
         const carried=missing>0?[...this.lastSeen.values()].filter(t=>!decoded.has(t.id)).sort((a,b)=>b.at-a.at).slice(0,missing):[];
+        const unaccounted=missing>carried.length;
         if (missing<=0) this.lastSeen.clear(); // a complete report is the whole truth
         for (const t of targets) this.lastSeen.set(t.id,{...t,at:now});
         // Where and since when each target has stayed put; a cut report says nothing about the targets it lost.
@@ -654,7 +655,7 @@ export class SoftwareZoneTracker {
         for (const [id,z] of Object.entries(this.zones)) {
             const inside=all.filter(t=>inZone(t,z));
             if (inside.length) {this.occupied[id]=true;delete this.outsideSince[id];}
-            else if (missing>0) delete this.outsideSince[id];
+            else if (unaccounted) delete this.outsideSince[id];
             else if (this.outsideSince[id]===undefined) this.outsideSince[id]=now;
             const ids=new Set(inside.map(t=>t.id)), before=this.inside[id];
             if (before && !this.awaiting.has(Number(id))) {
