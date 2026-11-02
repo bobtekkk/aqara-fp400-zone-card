@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import converter from '../z2m/aqara-fp400.mjs';
+import definition from '../z2m/aqara-fp400.mjs';
+// exposes is a function of the device options since native zones became an option.
+const converter={exposes:definition.exposes(undefined,{})};
 
 test('only four high-volume tracking entities are disabled in HA discovery by default',()=>{
     for(const name of ['targets_xy','tracking_last_update','tracking_last_frame','motion_last_frame']){

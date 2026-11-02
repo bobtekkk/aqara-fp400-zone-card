@@ -1,0 +1,145 @@
+[
+  {
+    "session": "fp400-m3-installation-20261022-174731Z",
+    "capture": "two-zones-transition-checkpoint.pcap",
+    "sha256": "bb01d887f3d6df1d7e60187c2244fbef64fe2a4e3c1dbb6923d5397cf9e43ffa",
+    "frames": [
+      {
+        "frame": 1950,
+        "endpoint": 1,
+        "cluster": "0x0406",
+        "zclHex": "1c5f117b8a00001801"
+      },
+      {
+        "frame": 1954,
+        "endpoint": 1,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f117d8a0200210100"
+      },
+      {
+        "frame": 1962,
+        "endpoint": 1,
+        "cluster": "0xfc0c",
+        "zclHex": "1c5f11008a07003002"
+      },
+      {
+        "frame": 2114,
+        "endpoint": 2,
+        "cluster": "0x0400",
+        "zclHex": "1c5f11248a0000210931"
+      },
+      {
+        "frame": 3892,
+        "endpoint": 1,
+        "cluster": "0x0406",
+        "zclHex": "1c5f11308a00001801"
+      },
+      {
+        "frame": 3895,
+        "endpoint": 1,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f11328a0200210100"
+      },
+      {
+        "frame": 3900,
+        "endpoint": 1,
+        "cluster": "0xfc0c",
+        "zclHex": "1c5f11348a07003002"
+      },
+      {
+        "frame": 3901,
+        "endpoint": 1,
+        "cluster": "0xfc0c",
+        "zclHex": "1c5f11348a07003002"
+      },
+      {
+        "frame": 4035,
+        "endpoint": 2,
+        "cluster": "0x0400",
+        "zclHex": "1c5f11548a0000210931"
+      },
+      {
+        "frame": 10280,
+        "endpoint": 1,
+        "cluster": "0x0406",
+        "zclHex": "1c5f11378a00001801"
+      },
+      {
+        "frame": 10286,
+        "endpoint": 1,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f11398a0200210100"
+      },
+      {
+        "frame": 10290,
+        "endpoint": 1,
+        "cluster": "0xfc0c",
+        "zclHex": "1c5f113b8a07003002"
+      },
+      {
+        "frame": 10295,
+        "endpoint": 3,
+        "cluster": "0x0406",
+        "zclHex": "1c5f113d8a00001800"
+      },
+      {
+        "frame": 10301,
+        "endpoint": 3,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f113f8a0200210000"
+      },
+      {
+        "frame": 10328,
+        "endpoint": 4,
+        "cluster": "0x0406",
+        "zclHex": "1c5f11468a00001800"
+      },
+      {
+        "frame": 10341,
+        "endpoint": 4,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f114a8a0200210000"
+      },
+      {
+        "frame": 10599,
+        "endpoint": 2,
+        "cluster": "0x0400",
+        "zclHex": "1c5f111a8a000021661e"
+      }
+    ]
+  },
+  {
+    "session": "fp400-m3-coordinates-20261022-192810Z",
+    "capture": "analysis-snapshot.pcap",
+    "sha256": "fb9de3f4c5edaecdb23b5f46f839a684b43b012c1242a8c1e73dcc1fa2919058",
+    "frames": [
+      {
+        "frame": 2914,
+        "endpoint": 3,
+        "cluster": "0x0406",
+        "zclHex": "1c5f11738a00001801",
+        "runtimeName": "occupancySensing",
+        "attribute": "occupancy",
+        "expected": true
+      },
+      {
+        "frame": 2927,
+        "endpoint": 3,
+        "cluster": "0xfc0b",
+        "zclHex": "1c5f11768a0200210100",
+        "runtimeName": "aqaraFp400Radar",
+        "attribute": "currentHumanCount",
+        "expected": 1
+      },
+      {
+        "frame": 3203,
+        "endpoint": 2,
+        "cluster": "0x0400",
+        "zclHex": "1c5f113a8a0000210000",
+        "runtimeName": "illuminanceMeasurement",
+        "attribute": "measuredValue",
+        "expected": 0
+      }
+    ]
+  }
+]

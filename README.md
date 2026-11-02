@@ -9,8 +9,9 @@ Draw presence zones, doorways and "ghost" spots for the **Aqara FP400** spatial 
 
 ![The card: a live room map with two zones, two tracked targets, an ignore spot, a doorway and an outside-room area](docs/screenshot.png)
 
-- **Up to 8 zones.** Draw rectangles on a live map; each one becomes its own occupancy sensor in Home Assistant, named after the zone (a zone called "Desk" gives you "Desk occupancy").
-- **People count and movement per zone.** Each zone also tells you how many people are in it and whether they are moving or still, and fires enter/leave events.
+- **Up to 8 software zones.** Draw rectangles on a live map; each one becomes its own occupancy sensor in Home Assistant, named after the zone (a zone called "Desk" gives you "Desk occupancy").
+- **Native sensor zones.** Enable `native_zones` in Zigbee2MQTT's device options, then switch to **Native** to paint the FP400's own detection zones as 0.5 m cells. Their occupancy and people counts come from the sensor, independently of coordinate tracking.
+- **People count and movement per software zone.** Each software zone also tells you how many people are in it and whether they are moving or still, and fires enter/leave events.
 - **Areas, like in the Aqara app.** Paint and erase the sensor's own areas: **ignore spots** (fake targets from a curtain, fan or TV), **doorways** (where people come and go) and **outside room** (behind a wall or a window).
 - **Ghost targets.** Click a dot on the map to make the sensor forget it, or to turn its spot into an ignore spot.
 - **Sensor settings.** Sensitivity, empty delay, approach distance, AI features, mounting and room learning, in one panel.
@@ -27,7 +28,7 @@ Draw presence zones, doorways and "ghost" spots for the **Aqara FP400** spatial 
 
 | Part | What it does | How you install it |
 |---|---|---|
-| `z2m/aqara-fp400.mjs` | Zigbee2MQTT converter: reads the FP400's position reports, runs the zones, writes areas and settings to the sensor | Copy one file (HACS cannot install Zigbee2MQTT converters) |
+| `z2m/aqara-fp400.mjs` | Zigbee2MQTT converter: runs software zones from positions, writes native zones, areas and settings, and receives sensor reports | Copy one file (HACS cannot install Zigbee2MQTT converters) |
 | `fp400-zone-card.js` | The dashboard editor | HACS |
 
 ## Requirements
@@ -151,9 +152,19 @@ payload, including values that Home Assistant has not discovered as entities.
 - Drag empty space to pan, use the mouse wheel to zoom, drag a zone to move it and its corners to resize it. Arrow keys nudge the selected zone.
 - **Discard** throws away everything you have not saved.
 
+### Native sensor zones
+
+The card opens in **Software** mode. Native zones are optional: enable **native_zones** in the FP400's Zigbee2MQTT device options first, then select **Native** to edit detection zones computed by the FP400 itself. The option is off by default, so software-only installations do not get the 40 native editor entities. Save or discard current edits before switching modes; switching does not copy or replace your zones.
+
+Draw a new zone, then use **Paint / Erase** to adjust its 0.5 m cells and name it. **Save zones** sends only the changed IDs. A new zone stays **Saving** while its endpoint initializes (at least 20 seconds); it is confirmed by the next poll. Once saved, change **Empty delay** in the zone details or the existing `zone_N_absence_timeout` number entity. This setting applies immediately and is separate from geometry. Each zone retains its exact bitmap, including holes and separate groups of cells. Native zones have their own `native_zone_N_occupancy` and `native_zone_N_count` entities; software entities and enter/leave actions keep their existing meaning.
+
+**Shape unknown** means the card cannot show confirmed geometry for that ID. Select it explicitly and confirm before replacing or deleting it. A free slot is used for a new zone; other sensor zones are left alone. A failed save keeps your open draft for retry and reports the failure instead of saying Saved.
+
+The converter records successfully written masks in Zigbee2MQTT's device database. It cannot reliably import the complete zone catalogue on adapters affected by APS fragmentation, or detect geometry changed elsewhere under the same ID. Native zones are not automatically recreated if the sensor loses them. See [protocol and recovery details](docs/native-zones.md).
+
 ### Every zone becomes a sensor
 
-When you save a zone, Home Assistant gets a sensor named after it: a zone called **Desk** shows up as **Desk occupancy**. It turns on while someone is in that zone, so you can use it in automations and dashboards like any motion sensor. To find it, search for the zone's name under Settings → Devices & services → Entities.
+When you save a software zone, Home Assistant gets a sensor named after it: a zone called **Desk** shows up as **Desk occupancy**. It turns on while someone is in that zone, so you can use it in automations and dashboards like any motion sensor. To find it, search for the zone's name under Settings → Devices & services → Entities.
 
 | Entity | Name in Home Assistant | Meaning |
 |---|---|---|
@@ -179,13 +190,13 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 ## Good to know
 
 - Positions are in centimetres from the sensor: x is left/right, y is the distance in front of it. Walk along a new zone's edges once to check it.
-- Zones are computed in Zigbee2MQTT from the sensor's position reports. They are saved in Zigbee2MQTT's device database and survive restarts.
+- Software zones are computed in Zigbee2MQTT from the sensor's position reports. They are saved in Zigbee2MQTT's device database and survive restarts.
 - Areas are 0.5 m cells written to the sensor's own memory, like the Aqara app does. Their left/right orientation follows the check against the device made by [RAR/ha-aqara-fp400](https://github.com/RAR/ha-aqara-fp400). If an ignore spot does not hide a ghost, please open an issue.
 - Painting **Outside room** cells replaces the converter's simple `detection_depth` setting (which cuts the room off at one distance); clear them to use it again.
 - The converter re-reads the areas every 5 minutes, so the card also shows changes made elsewhere.
-- Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets nothing is lost; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
+- Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets all positions and activity values still fit; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
-- The FP400 forgets its areas and mounting when it loses power. The converter keeps everything you save and puts back what the sensor lost when it comes back; the Zigbee2MQTT log says what it put back.
+- The FP400 forgets its areas and mounting when it loses power. The converter keeps those areas, mounting values and scalar settings and puts them back when the sensor comes back; the Zigbee2MQTT log says what it put back.
 - The map turn is stored with the sensor (`number.<fp400>_map_rotation`), so every dashboard shows the room the same way. Each zone remembers the turn it was drawn with.
 
 ## If something looks wrong
@@ -207,7 +218,7 @@ npm test      # unit tests
 npm run e2e   # drives the card in a browser with real mouse input
 ```
 
-`npm run e2e` needs Playwright's Chromium once: `npx playwright-core install chromium`. `test/preview.html` runs the card against a simulated sensor; serve the repository folder with any static web server to try it.
+`npm run e2e` needs Playwright's Chromium once: `npx playwright-core install chromium`. Native command encoding and report handling are covered by captured protocol vectors; see [native zones](docs/native-zones.md) for evidence and hardware validation limits. `test/preview.html` runs the card against a simulated sensor; serve the repository folder with any static web server to try it.
 
 ## Support
 
