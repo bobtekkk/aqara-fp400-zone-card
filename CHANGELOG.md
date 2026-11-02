@@ -7,6 +7,24 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
+### Added
+
+- **Native zones**, the sensor's own detection zones (optional). Turn on `native_zones` in the FP400's Zigbee2MQTT device options, then switch the card to **Native zones** and paint them in 0.5 m cells. The sensor works out who is in them itself, so they don't depend on position reports, which Ember coordinators cut short when there are 3 or more targets. Each one gets an occupancy sensor, a people count and its own empty delay, and they stay on the sensor through a power cut. Off by default, so nothing changes unless you turn it on. Thanks to [@makleso6](https://github.com/makleso6) ([#9](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/9)).
+- `restore_status` and `restore_error` (off by default) show whether the settings a sensor lost were put back.
+
+### Fixed
+
+- Settings in ⚙ Settings save again after Home Assistant renamed the sensor's entities ([#10](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/10)).
+- **Learn the empty room** no longer says it finished as soon as it starts. It now waits for the sensor's answer ([#11](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/11)).
+- A zone could empty while a target that dropped out of a cut report might still be in it. Its countdown now stops until every target is accounted for ([#12](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/12)).
+- Reports from the sensor's zone endpoints no longer overwrite the room's people count, activity and settings ([#13](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/13)).
+- If putting back lost settings only partly works, the converter tries again after 10 s, 30 s, 1 min and 5 min, and a setting you change meanwhile can't be overwritten by it ([#14](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/14)).
+- While Zigbee2MQTT was offline, the card told users without admin rights to turn on entities that were already on.
+
+Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
+
 ### Changed
 
 - Much less history in Home Assistant. The four busiest tracking entities (`targets_xy`, `tracking_last_update`, `tracking_last_frame`, `motion_last_frame`) are now off by default on new installs, and the card gets its live dots straight from MQTT instead. That needs a Home Assistant admin user; for anyone else the card names the two entities to turn on. Sensors you already have keep their entities, and the README shows how to keep them out of the history. Thanks to [@monosoul](https://github.com/monosoul) ([#7](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/7)).
@@ -102,7 +120,8 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.3.0...v0.4.0

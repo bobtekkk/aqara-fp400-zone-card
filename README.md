@@ -196,7 +196,7 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 - The converter re-reads the areas every 5 minutes, so the card also shows changes made elsewhere.
 - Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets all positions and activity values still fit; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
-- The FP400 forgets its areas and mounting when it loses power. The converter keeps those areas, mounting values and scalar settings and puts them back when the sensor comes back; the Zigbee2MQTT log says what it put back.
+- The FP400 forgets its areas and mounting when it loses power. The converter keeps those areas, mounting values and scalar settings and puts them back when the sensor comes back; the Zigbee2MQTT log says what it put back. Native zones and their empty delay stay on the sensor through a power cut.
 - The map turn is stored with the sensor (`number.<fp400>_map_rotation`), so every dashboard shows the room the same way. Each zone remembers the turn it was drawn with.
 
 ## If something looks wrong
