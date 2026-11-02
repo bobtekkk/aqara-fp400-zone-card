@@ -22,6 +22,7 @@ const aqaraActivityState = {
     cluster: 'aqaraFp400Location',
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg) => {
+        if (msg.endpoint.ID !== 1) return;
         const state = msg.data.activityState ?? msg.data[7];
         const values = ['unknown', 'active', 'still'];
         return Number.isInteger(state) && state >= 0 && state < values.length
@@ -56,7 +57,7 @@ function decodeConfig(data) {
 }
 const fp400ConfigReport = {
     cluster: configCluster, type: ['attributeReport', 'readResponse'],
-    convert: (model, msg) => decodeConfig(msg.data),
+    convert: (model, msg) => msg.endpoint.ID === 1 ? decodeConfig(msg.data) : undefined,
 };
 const fp400ConfigControl = {
     key: Object.keys(configOptions),
@@ -237,6 +238,8 @@ function withDeviceLock(device, task) {
     deviceLocks.set(device.ieeeAddr, run.catch(() => {}));
     return run;
 }
+const serializedSetting = control => ({...control, convertSet: (entity, key, value, meta) =>
+    withDeviceLock(meta.device, () => control.convertSet(entity, key, value, meta))});
 // The FP400 forgets its areas and mounting when it loses power (a Zigbee2MQTT restart keeps them), so every
 // setting written through this converter is kept with the device and put back when the sensor has lost it.
 // Settings made before this existed are taken over from the sensor at the first check.
@@ -260,7 +263,13 @@ function unsetValue(setting, value) {
 async function remember(device, setting, raw) {
     device.meta ??= {};
     device.meta.fp400Saved = {...device.meta.fp400Saved, [savedKey(setting)]: {...setting, value: savedValue(setting, raw)}};
-    try {await device.save?.();} catch { /* kept in memory; saved with the next change */ }
+    try {await device.save?.(); persistencePending.delete(device.ieeeAddr);}
+    catch (error) {
+        persistencePending.add(device.ieeeAddr);restoreChecked.delete(device.ieeeAddr);
+        // The sensor took the setting, so the write still succeeds; the next poll saves it again.
+        updateRestoreProgress(device, {status:'pending', error:`Configuration backup: ${error.message}`, attempt:0, nextAt:Date.now()+10000});
+        logger.warning(`FP400 '${device.ieeeAddr}': could not save the setting backup, trying again soon: ${error.message}`, NS);
+    }
 }
 async function readSetting(device, setting) {
     const data = await device.getEndpoint(setting.endpoint).read(setting.cluster, [setting.attribute], setting.manufacturer ? manufacturerOptions : {});
@@ -273,19 +282,29 @@ async function readSetting(device, setting) {
 export async function restoreSettings(device) {
     // Every FP400 has areas, so this read tells an offline sensor from a setting its firmware lacks.
     await device.getEndpoint(1).read(configCluster, [regionAttributes.interference_region], manufacturerOptions);
-    const saved = {...device.meta?.fp400Saved}, restored = [], failed = [];
+    const saved = {...device.meta?.fp400Saved}, restored = [], failed = [], unsupported = [];
+    // Only explicit ZCL statuses establish unsupported firmware, never a timeout or an empty reply.
+    const classify = (name, error) => {
+        if ([0x86,0xc3].includes(error?.code)) {if(savedKeyKnown(name))unsupported.push(name);}
+        else failed.push(`${name}: ${error?.message ?? error}`);
+    };
+    const savedKeyKnown = name => Object.values(saved).some(setting=>setting.name===name);
     let adopted = false;
     for (const setting of restorable) {
         if (saved[savedKey(setting)]) continue;
         try {
             const value = await readSetting(device, setting);
             if (!unsetValue(setting, value)) {saved[savedKey(setting)] = {...setting, value};adopted = true;}
-        } catch { /* not on this firmware */ }
+        } catch (error) {classify(setting.name,error);}
     }
     if (adopted) {
         device.meta ??= {};
         device.meta.fp400Saved = saved;
-        try {await device.save?.();} catch { /* taken over again at the next check */ }
+        persistencePending.add(device.ieeeAddr);
+    }
+    if (persistencePending.has(device.ieeeAddr)) {
+        try {await device.save?.();persistencePending.delete(device.ieeeAddr);}
+        catch (error) {failed.push(`Configuration backup: ${error.message}`);}
     }
     // Mounting first and areas last, in case a new mounting makes the sensor redo its areas.
     const order = setting => {const index = restorable.findIndex(known => savedKey(known) === savedKey(setting));return index < 0 ? restorable.length : index;};
@@ -299,14 +318,27 @@ export async function restoreSettings(device) {
             await device.getEndpoint(setting.endpoint).write(setting.cluster, {[setting.attribute]: {value, type: setting.type}}, setting.manufacturer ? manufacturerOptions : {});
             if (await readSetting(device, setting) !== setting.value) throw new Error('not confirmed');
             restored.push(setting.name);
-        } catch {failed.push(setting.name);}
+        } catch (error) {classify(setting.name,error);}
     }
     if (failed.length) logger.warning(`FP400 '${device.ieeeAddr}': could not check or put back ${failed.join(', ')}`, NS);
-    return restored;
+    return {restored, failed, unsupported};
 }
 // Checked after a Zigbee2MQTT start, after the sensor announces itself (it does when power returns),
 // and when the periodic area read finds a kept area wiped.
 const restoreChecked = new Set();
+const persistencePending = new Set(), restoreProgress = new Map();
+const restoreState = device => {
+    const progress=restoreProgress.get(device.ieeeAddr);
+    return {restore_status:progress?.status??'pending',restore_error:progress?.error??''};
+};
+function updateRestoreProgress(device, progress) {
+    restoreProgress.set(device.ieeeAddr,progress);
+    softwareZoneContexts.get(device.ieeeAddr)?.publish?.(restoreState(device));
+}
+const fp400RestoreDiagnostics = {
+    key:['restore_status','restore_error'],
+    convertGet:async(entity,key,meta)=>meta.publish(restoreState(meta.device)),
+};
 // Monitoring cells are stored as exclusions, so a clear bit means "selected".
 function regionState(key, value) {
     let set = 0;
@@ -553,11 +585,12 @@ const fp400ZoneSettingsControl = {
         const endpoint = await zoneSettingEndpoint(meta.device, Number(key.split('_')[1]));
         await endpoint.read(key.endsWith('_sensitivity') ? 128 : 'msOccupancySensing', [key.endsWith('_sensitivity') ? 0 : 3]);
     }),
-    convertSet: async (entity, key, value, meta) => withDeviceLock(meta.device, async () => {
+    // toZigbee wraps this in serializedSetting, which takes the device lock.
+    convertSet: async (entity, key, value, meta) => {
         const id = Number(key.split('_')[1]);
         const endpoint = await zoneSettingEndpoint(meta.device, id);
         return {state: await writeZoneSetting(meta.device, id, endpoint, key, value)};
-    }),
+    },
 };
 const fp400CapacityReport = {
     cluster: 'aqaraFp400Location', type: ['attributeReport', 'readResponse'],
@@ -925,7 +958,7 @@ export class SoftwareZoneTracker {
     constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.still=new Map();this.awaiting=new Set();this.invalid=false;this.partial=false;this.presence=undefined;}
     // Returns the targets that entered or left each zone with this frame. When the report was cut short
     // (reported > targets.length), targets missing from it are assumed to stay where they were last seen;
-    // if even that cannot account for every target, no zone starts counting down to empty.
+    // if even that cannot account for every target, no zone counts down to empty (a running countdown stops).
     accept(targets, now, reported = targets.length) {
         this.lastAt=now;this.invalid=false;
         const decoded=new Set(targets.map(t=>t.id)),missing=reported-targets.length;
@@ -944,7 +977,8 @@ export class SoftwareZoneTracker {
         for (const [id,z] of Object.entries(this.zones)) {
             const inside=all.filter(t=>inZone(t,z));
             if (inside.length) {this.occupied[id]=true;delete this.outsideSince[id];}
-            else if (!unaccounted && this.outsideSince[id]===undefined) this.outsideSince[id]=now;
+            else if (unaccounted) delete this.outsideSince[id];
+            else if (this.outsideSince[id]===undefined) this.outsideSince[id]=now;
             const ids=new Set(inside.map(t=>t.id)), before=this.inside[id];
             if (before && !this.awaiting.has(Number(id))) {
                 for (const t of ids) if (!before.ids.has(t)) events.push({zone:Number(id),type:'enter'});
@@ -1038,12 +1072,17 @@ export async function fp400Poll(device) {
     if (softwareZoneContexts.get(device.ieeeAddr)?.tracker.presence===undefined) {
         try {await device.getEndpoint(1).read('msOccupancySensing', ['occupancy']);} catch {/* the next poll tries again */}
     }
-    if (!restoreChecked.has(device.ieeeAddr)) {
+    if (!restoreChecked.has(device.ieeeAddr) && Date.now()>=(restoreProgress.get(device.ieeeAddr)?.nextAt??0)) {
+        let result;
         try {
-            const restored = await withDeviceLock(device, () => restoreSettings(device));
-            restoreChecked.add(device.ieeeAddr);
-            if (restored.length) logger.info(`FP400 '${device.ieeeAddr}' lost settings (usually a power cut); put back: ${restored.join(', ')}`, NS);
-        } catch {/* the sensor did not answer; the next poll tries again */}
+            result = await withDeviceLock(device, () => restoreSettings(device));
+        } catch(error) {result={restored:[],failed:[error.message??String(error)],unsupported:[]};}
+        const {restored,failed,unsupported}=result,attempt=(restoreProgress.get(device.ieeeAddr)?.attempt??0)+1;
+        if (!failed.length) restoreChecked.add(device.ieeeAddr);
+        updateRestoreProgress(device, {status:failed.length?'pending':unsupported.length?'error':'complete',
+            error:[...failed,...unsupported.map(name=>`${name}: unsupported by this firmware`)].join('; '),attempt,
+            nextAt:Date.now()+[10000,30000,60000,300000][Math.min(attempt-1,3)]});
+        if (restored.length) logger.info(`FP400 '${device.ieeeAddr}' lost settings (usually a power cut); put back: ${restored.join(', ')}`, NS);
     }
     await forgetStillTargets(device);
     if (Object.keys(device.meta.fp400SoftwareZones ?? {}).length || device.meta.fp400ForgetStill) await subscribeTracking(device);
@@ -1053,7 +1092,9 @@ export async function fp400Poll(device) {
             const data = await device.getEndpoint(1).read(configCluster, [id], manufacturerOptions);
             // A kept area that reads empty: the sensor lost power without its announcement reaching us.
             const kept = device.meta.fp400Saved?.[`1/${configCluster}/${id}`]?.value;
-            if (kept && !emptyMask(kept) && data?.[id] !== undefined && emptyMask(regionBuffer(data[id]).toString('hex'))) restoreChecked.delete(device.ieeeAddr);
+            if (kept && !emptyMask(kept) && data?.[id] !== undefined && emptyMask(regionBuffer(data[id]).toString('hex'))) {
+                restoreChecked.delete(device.ieeeAddr);restoreProgress.delete(device.ieeeAddr);
+            }
         }
     });
     regionsReadAt.set(device.ieeeAddr, Date.now());
@@ -1221,13 +1262,13 @@ const fp400TrackingExposes = [
         .withDescription('Make the sensor forget one tracked target by its id from targets_xy, for example a ghost. Real people are detected again.'),
     e.numeric('forget_still_targets', ea.ALL).withUnit('min').withValueMin(0).withValueMax(240).withValueStep(1).withCategory('config')
         .withDescription('Make the sensor forget a target whose position has not changed for this many minutes, usually a ghost that keeps a zone occupied. A real person is picked up again. People asleep can lie this still for over an hour. 0 turns it off.'),
-    e.text('motion_last_frame', ea.STATE).withCategory('diagnostic').withDescription('Latest raw FC0B movement event, hex'),
+    e.text('motion_last_frame', ea.STATE).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false}).withDescription('Latest raw FC0B movement event, hex'),
     e.enum('tracking_status', ea.STATE, ['valid','partial','held','invalid','stale']).withCategory('diagnostic')
         .withDescription('valid: fresh positions. partial: the coordinator cut the last report, missing targets kept where last seen. held: no new positions; zones follow the sensor\'s own presence. invalid: unreadable report. stale: no positions and no presence'),
-    e.text('tracking_last_frame', ea.STATE).withCategory('diagnostic').withDescription('Latest FC0C position event, hex (first 120 bytes)'),
-    e.text('tracking_last_update', ea.STATE).withCategory('diagnostic').withDescription('Time of last complete position report'),
+    e.text('tracking_last_frame', ea.STATE).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false}).withDescription('Latest FC0C position event, hex (first 120 bytes)'),
+    e.text('tracking_last_update', ea.STATE).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false}).withDescription('Time of last complete position report'),
     e.numeric('target_count', ea.STATE).withDescription('Number of tracking records; may include retained tracks or animals'),
-    e.text('targets_xy', ea.STATE).withDescription('id:x:y positions in raw device units; units/orientation need room calibration'),
+    e.text('targets_xy', ea.STATE).withHomeAssistant({enabledByDefault:false}).withDescription('id:x:y positions in raw device units; units/orientation need room calibration'),
 ];
 // FC0A attribute 16 lists the sensor's native zones as [id, type, cells, enabled] structs; null when unreadable.
 export function nativeZoneIds(value) {
@@ -1328,13 +1369,16 @@ export default {
         fp400NativeReport, {...fp400NativeReport, cluster: 'aqaraFp400Radar'}, {...fp400NativeReport, cluster: '64523'},
         ...attributeSyncConverters,
     ],
-    toZigbee: [fp400NativeControl, softwareZoneControl, fp400MapRotation, fp400ForgetStill, fp400RemoveTarget, fp400ZoneSettingsControl, fp400CapacityGet,
-        ...fp400InstallationControl.key.map(key => ({...fp400InstallationControl, key: [key]})),
+    toZigbee: [fp400NativeControl, softwareZoneControl, fp400MapRotation, fp400ForgetStill, fp400RemoveTarget, serializedSetting(fp400ZoneSettingsControl), fp400CapacityGet, fp400RestoreDiagnostics,
+        ...fp400InstallationControl.key.map(key => ({...serializedSetting(fp400InstallationControl), key: [key]})),
         ...fp400RegionControl.key.map(key => ({...fp400RegionControl, key: [key]})),
         ...fp400RegionGet.key.map(key => ({...fp400RegionGet, key: [key]})),
-        ...fp400AreaControl.key.map(key => ({...fp400AreaControl, key: [key]})), fp400Refresh, ...Object.keys(configOptions).map((key) => ({...fp400ConfigControl, key: [key]})), fp400Learning, fp400SensitivityControl, fp400AbsenceControl, fp400DepthControl],
+        ...fp400AreaControl.key.map(key => ({...fp400AreaControl, key: [key]})), fp400Refresh, ...Object.keys(configOptions).map((key) => ({...serializedSetting(fp400ConfigControl), key: [key]})), fp400Learning, serializedSetting(fp400SensitivityControl), serializedSetting(fp400AbsenceControl), fp400DepthControl],
     options: [e.binary('native_zones', ea.SET, true, false).withDescription('Enable native sensor zone editing and telemetry (default: false)')],
     exposes: (device, options = {}) => [...(options.native_zones === true ? nativeZoneExposes : []), ...softwareZoneExposes, ...fp400TrackingExposes,
+        e.enum('restore_status',ea.STATE_GET,['pending','complete','error']).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false})
+            .withDescription('Configuration recovery: pending retries temporary failures; error identifies saved settings unsupported by the firmware'),
+        e.text('restore_error',ea.STATE_GET).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false}).withDescription('Settings or persistent backup that could not be confirmed'),
         ...fp400ZoneExposes,
         ...fp400AdditionalExposes,
         e.numeric('detection_depth', ea.ALL).withUnit('m').withValueMin(0.5).withValueMax(10).withValueStep(0.5).withCategory('config')
@@ -1356,9 +1400,7 @@ export default {
     // Tracking (re)starts from the 10 s poll below: on 'start' this hook runs before the custom clusters exist.
     onEvent: async(event)=>{
         // The sensor announces itself when power returns, with its areas and mounting forgotten.
-        if(event.type==='deviceAnnounce') {
-            restoreChecked.delete(event.data.device.ieeeAddr);
-        }
+        if(event.type==='deviceAnnounce') {restoreChecked.delete(event.data.device.ieeeAddr);restoreProgress.delete(event.data.device.ieeeAddr);}
         if(event.type==='stop') {
             const context=softwareZoneContexts.get(event.data.ieeeAddr);
             if(context)clearInterval(context.timer);
@@ -1369,6 +1411,7 @@ export default {
             const native = nativeContexts.get(event.data.ieeeAddr);
             if (native) {native.stopped = true; native.publish = undefined;}
             nativeContexts.delete(event.data.ieeeAddr);
+            restoreProgress.delete(event.data.ieeeAddr);persistencePending.delete(event.data.ieeeAddr);
         }
     },
     extend: [

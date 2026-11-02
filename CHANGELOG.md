@@ -7,6 +7,10 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+### Changed
+
+- Much less history in Home Assistant. The four busiest tracking entities (`targets_xy`, `tracking_last_update`, `tracking_last_frame`, `motion_last_frame`) are now off by default on new installs, and the card gets its live dots straight from MQTT instead. That needs a Home Assistant admin user; for anyone else the card names the two entities to turn on. Sensors you already have keep their entities, and the README shows how to keep them out of the history. Thanks to [@monosoul](https://github.com/monosoul) ([#7](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/7)).
+
 ## [0.5.0] - 2026-10-29
 
 ### Added

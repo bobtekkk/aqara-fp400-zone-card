@@ -125,6 +125,20 @@ async function nativeMode(page){
     await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card');c.view={x:-400,y:-50,width:800,height:900};c.render();});
 }
 const scenarios = {
+    async RENAMED() {
+        for(const admin of [false,true]) {
+            const page=await open(`?renamedsettings=1&latency=20${admin?'&admin=1':''}`);
+            await btn(page,'settings').click();
+            const input=id=>page.locator(`fp400-zone-card [data-setting="${id}"]`);
+            await input('number.office_delay').fill('5');await input('number.office_delay').press('Tab');
+            await waitMessage(page,/Saved: Empty after/);
+            await input('select.office_detection').selectOption('high');await waitMessage(page,/Saved: Sensitivity/);
+            await input('switch.office_recognition').check();await waitMessage(page,/Saved: Better person recognition/);
+            const sent=await calls(page);
+            check(`RENAMED writes renamed controls (admin=${admin})`,['number.office_delay','select.office_detection','switch.office_recognition'].every(id=>sent.some(c=>c.entity_id===id)),sent);
+            noErrors('RENAMED',page);await page.close();
+        }
+    },
     async A() { // drawn and then cancelled: nothing stays behind
         const page = await open();
         await btn(page, 'areas').click();
@@ -437,7 +451,9 @@ const scenarios = {
         await btn(page, 'learn').click();
         check('X6 Learn asks first and sends nothing', (await calls(page)).length === 4, await calls(page));
         await btn(page, 'learn').click();
-        await waitMessage(page, /Room learning finished/, 8000);
+        await page.waitForTimeout(100);
+        check('X7 clearing the old result does not finish learning',await page.evaluate(()=>document.querySelector('fp400-zone-card').learnBefore!==undefined),await st(page));
+        await waitMessage(page, /Room learning finished\./, 8000);
         check('X7 the second press starts learning and the card reports the result', (await calls(page)).at(-1).service === 'press', await calls(page));
         await setting(page, 'forget_still_targets').fill('15'); await setting(page, 'forget_still_targets').press('Enter');
         await waitMessage(page, /Saved: Forget still dots after/);

@@ -13,6 +13,7 @@ if(params.has('phone'))document.querySelector('main').className='phone';
 const idOf={},keyOf={},ieee='0x54ef440000000001';
 if(params.has('renamed'))for(const [d,k,n] of [['text','software_zone_1_config','kitchen_zone_configuration'],['binary_sensor','software_zone_1_occupancy','kitchen_occupancy'],['binary_sensor','software_zone_1_available','kitchen_tracking_available'],['sensor','software_zone_1_count','kitchen_people'],['sensor','software_zone_1_activity','kitchen_activity']])idOf[`${d}.${k}`]=`${d}.kitchen_fp400_${n}`;
 const set=(domain,key,state,attributes={})=>{const id=idOf[`${domain}.${key}`]??`${domain}.${device}_${key}`;keyOf[id]=key;states[id]={state,attributes};};
+if(params.has('renamedsettings'))Object.assign(idOf,{'number.absence_timeout':'number.office_delay','select.presence_sensitivity':'select.office_detection','switch.ai_high_precision':'switch.office_recognition'});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 if(params.has('native')){
     if(params.has('renamed')){idOf['text.native_zone_1_config']='text.kitchen_native_configuration';idOf['number.zone_1_absence_timeout']='number.kitchen_native_delay';}
@@ -33,6 +34,7 @@ if(!params.has('nosettings')){
     set('number','absence_timeout','10',{min:0,max:300,step:1});set('number','installation_height','1700',{min:0,max:65535,step:1});
     for(const key of ['ai_high_precision','ai_adaptive_sensitivity','ai_entry_exit_recognition','ai_interference_recognition','human_count_enabled'])set('switch',key,'off');
     set('button','spatial_learning','unknown');set('button','refresh_configuration','unknown');set('sensor','learning_result_time','2026-09-30T09:27:37.721Z');
+    set('sensor','learning_state','result_received');set('sensor','learning_result_code','0');
     if(!old)set('number','map_rotation',params.get('rotation')??'0',{min:-180,max:180,step:1});
     if(!old)set('number','forget_still_targets','0',{min:0,max:240,step:1});
 }
@@ -67,7 +69,7 @@ async function convert(type,op,value){
     else {const shape=JSON.parse(value);sim.shapes.push(shape);for(const b of shape.points?shapeBits(shape.points):cellBits(shape)){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}}
     masks[type].set(read);set('sensor',`${type}_mask_hex`,maskHex(type));card.hass={...hass};
 }
-const hass={states,user:{is_admin:false},callService:async(domain,service,data)=>{
+const hass={states,user:{is_admin:params.has('admin')},callService:async(domain,service,data)=>{
     sim.calls.push({domain,service,...data});
     await sleep(20);
     const id=data.entity_id,key=keyOf[id]??id.slice(id.indexOf('.')+device.length+2),type=AREAS.find(t=>key.startsWith(`${t}_`));
@@ -94,11 +96,14 @@ const hass={states,user:{is_admin:false},callService:async(domain,service,data)=
         later(()=>{states[id]={...states[id],state:String(data.value)};});
     }
     else if(domain==='switch')later(()=>{states[id]={...states[id],state:service==='turn_on'?'on':'off'};});
-    else if(domain==='button'){states[id]={...states[id],state:new Date().toISOString()};if(key==='spatial_learning')sleep(sim.latency*3).then(()=>{set('sensor','learning_result_time',new Date().toISOString());card.hass={...hass};});}
+    else if(domain==='button'){states[id]={...states[id],state:new Date().toISOString()};if(key==='spatial_learning'){
+        set('sensor','learning_state','accepted');set('sensor','learning_result_time','unknown');set('sensor','learning_result_code','unknown');card.hass={...hass};
+        sleep(sim.latency*3).then(()=>{set('sensor','learning_state','result_received');set('sensor','learning_result_code','0');set('sensor','learning_result_time',new Date().toISOString());card.hass={...hass};});
+    }}
     else later(()=>{states[id]={state:data.value,attributes:{}};});
 }};
 if(params.has('offline'))for(const id of Object.keys(states))states[id]={state:'unavailable',attributes:states[id].attributes};
-if(params.has('registry')||params.has('renamed')){
+if(params.has('registry')||params.has('renamed')||params.has('renamedsettings')){
     hass.entities=Object.fromEntries(Object.keys(keyOf).map(id=>[id,{entity_id:id,platform:'mqtt',device_id:'fp400'}]));
     hass.callWS=async msg=>{
         sim.ws.push(msg.type);
@@ -108,6 +113,6 @@ if(params.has('registry')||params.has('renamed')){
 }
 if(params.has('held')){set('sensor','tracking_status','held');set('binary_sensor','software_zone_1_available','on');}
 card.setConfig(params.has('auto')?{}:{device:params.get('device')??device});
-function update(){if(!params.has('offline'))set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};}
+function update(){if(params.has('offline'))set('sensor','tracking_last_update','unavailable');else set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};}
 update();setInterval(update,Number(params.get('tick')??3000));
 </script></body></html>

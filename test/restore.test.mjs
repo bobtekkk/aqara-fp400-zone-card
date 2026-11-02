@@ -29,6 +29,7 @@ function fakeSensor(ieeeAddr) {
                 const data = {};
                 for (const id of ids) {
                     const value = attributes.get(`${endpoint}/${cluster}/${id}`);
+                    if (ids.length === 1 && value === undefined) throw Object.assign(new Error('Unsupported attribute'), {code: 0x86});
                     if (value !== undefined) data[named[`${cluster}/${id}`] ?? id] = Buffer.isBuffer(value) ? Buffer.from(value) : value;
                 }
                 return data;
@@ -140,7 +141,7 @@ test('a wiped area found by the 5-minute read is put back without an announcemen
     assert.deepEqual(device.attr(1, 'aqaraFp400Config', 19), kept);
 });
 
-test('a sensor that does not answer is checked again on the next poll', async () => {
+test('a sensor that does not answer is checked again after the initial retry delay', async (t) => {
     const device = fakeSensor('restore-offline');
     await fp400Poll(device);
     await set('installation_mode', 'ceiling', device);
@@ -148,6 +149,7 @@ test('a sensor that does not answer is checked again on the next poll', async ()
     await announce(device);
     await fp400Poll(device);
     device.offline = false;
+    const now = Date.now();t.mock.method(Date, 'now', () => now + 10000);
     await fp400Poll(device);
     assert.equal(device.attr(1, 'aqaraFp400Config', 0), 2);
 });
