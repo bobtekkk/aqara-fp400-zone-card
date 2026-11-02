@@ -802,7 +802,12 @@ const fp400NativeControl = {
                 // shortcut: a new endpoint reset its timeout about 10 s after append on the observed FP400.
                 // There is no documented ready event; wait at least 20 s using the existing 10 s poll.
                 if (append) {record.settleUntil = Date.now() + 20000; await device.save();}
-                const after = await readNativeZoneMap(device);
+                let after = await readNativeZoneMap(device);
+                // The sensor can still list a removed zone for a moment after acknowledging the removal.
+                for (let wait = 0; !config && after.has(id) && wait < 10; wait++) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    after = await readNativeZoneMap(device);
+                }
                 if (context.stopped) throw new Error('Native zone save was interrupted');
                 if (record.settleUntil > Date.now()) return {state: nativeZoneState(device)};
                 const extra = await finishNativeZone(device, id, after);

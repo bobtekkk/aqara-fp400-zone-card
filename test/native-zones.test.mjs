@@ -24,7 +24,10 @@ function sensor(entries = []) {
                     reads.push([ID, cluster, attr]);
                     if (device.requireRegistration && typeof cluster === 'string' && cluster.startsWith('aqara') && !device.customClusters[cluster]) throw new Error('custom cluster not registered');
                     if (device.failRead?.(ID, cluster, attr)) throw new Error('read failed');
-                    if (cluster === 'aqaraFp400Radar' && attr === 0) return {0: [...zones.values()]};
+                    if (cluster === 'aqaraFp400Radar' && attr === 0) {
+                        if (device.lagging && --device.lagging.reads <= 0) {zones.delete(device.lagging.id); device.lagging = null;}
+                        return {0: [...zones.values()]};
+                    }
                     if (cluster === 'aqaraFp400Radar' && attr === 1) return {1: [...zones].find(([, ep]) => ep === ID)?.[0]};
                     if (cluster === 'aqaraFp400Config' && attr === 17) return {17: device.capacity};
                     if (cluster === 'msOccupancySensing' && attr === 4) return {4: [{elmVal: 10}, {elmVal: 300}]};
@@ -43,7 +46,8 @@ function sensor(entries = []) {
                     if (device.response instanceof Error) throw device.response;
                     // The command may have reached the sensor even if the native ACK is missing.
                     const id = args.zone?.[0].elmVal ?? args.zoneId;
-                    if (name === 'removeZone') zones.delete(id);
+                    if (name === 'removeZone' && device.removalLag) device.lagging = {id, reads: device.removalLag};
+                    else if (name === 'removeZone') zones.delete(id);
                     else if (!zones.has(id)) zones.set(id, 7);
                     return device.response;
                 },
@@ -334,5 +338,16 @@ test('confirmed removal does not restore its old timeout into a foreign zone reu
     assert.equal(device.getEndpoint(7).timeout, 10);
     assert.ok(!Object.values(device.meta.fp400Saved).some(setting => setting.name === 'zone_1_absence_timeout'));
     assert.equal(nativeZoneState(device).native_zone_1_config, 'unmanaged');
+    await stop(device);
+});
+
+test('a removal is confirmed once the sensor stops listing the zone a moment later', async () => {
+    const device = sensor([[1, 7], [2, 4]]);
+    await set(device, {...config, overwrite: true}); await set(device, {...config, overwrite: true}, 2);
+    device.removalLag = 3;
+    await set(device, 'clear', 2);
+    assert.equal(nativeZoneState(device).native_zone_2_config, 'clear');
+    assert.equal(device.meta.fp400NativeZones[2].status, 'ready');
+    assert.deepEqual([...device.zones.keys()], [1]);
     await stop(device);
 });
