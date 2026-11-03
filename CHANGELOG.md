@@ -7,9 +7,11 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-03
+
 ### Changed
 
-- Zigbee2MQTT's device page shows the converter's release version (it said v0.0.2), so you can see which one is loaded. Zigbee2MQTT now sets the sensor up again once after each update, which takes a few seconds ([#4](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/4)). Thanks to [@satmandu](https://github.com/satmandu).
+- Zigbee2MQTT's device page shows the converter's release version (v0.6.1; it said v0.0.2), so you can see which one is loaded. Zigbee2MQTT now sets the sensor up again once after each update, which takes a few seconds ([#4](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/4)). Thanks to [@satmandu](https://github.com/satmandu).
 
 ## [0.6.0] - 2026-11-02
 
@@ -124,7 +126,8 @@ Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.4.0...v0.4.1
