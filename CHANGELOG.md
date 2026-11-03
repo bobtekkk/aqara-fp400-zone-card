@@ -7,6 +7,10 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+### Changed
+
+- Zigbee2MQTT's device page shows the converter's release version (it said v0.0.2), so you can see which one is loaded. Zigbee2MQTT now sets the sensor up again once after each update, which takes a few seconds ([#4](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/4)). Thanks to [@satmandu](https://github.com/satmandu).
+
 ## [0.6.0] - 2026-11-02
 
 ### Added

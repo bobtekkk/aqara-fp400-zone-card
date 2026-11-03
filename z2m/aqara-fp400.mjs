@@ -1356,8 +1356,8 @@ export default {
     vendor: 'Aqara',
     ota: true,
     description: 'Spatial multi-sensor (presence, illuminance and people count)',
-    // Zigbee2MQTT runs configure again once when this changes. 0.0.2: reporting entries go to the light and real zones.
-    version: '0.0.2',
+    // The release version, shown on the device page. Zigbee2MQTT runs configure again once when it changes.
+    version: '0.6.0',
     // Numeric-name copies catch reports that arrive before the custom clusters are registered.
     fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400RoomPresence, fp400Tracking, fp400Motion,
         fp400ZoneSettingsReport, fp400ZoneAbsenceReport,
