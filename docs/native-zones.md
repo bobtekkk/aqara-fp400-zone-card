@@ -40,7 +40,7 @@ Each command must fit Home Assistant MQTT Text's [255-character limit](https://w
 
 The geometry is a local record of acknowledged writes, not a fresh read of the sensor's full catalogue. Changes made by another controller to an existing ID's geometry cannot be detected from ChildEndpointList/ZoneID alone.
 
-## Pairing capture (not applied by this converter)
+## Pairing initialization
 
 The M3/Homey research observed a write to endpoint 1 / `0xFCC0` / `0x00A0`, uint8=1, manufacturer `0x115F`:
 
@@ -48,15 +48,20 @@ The M3/Homey research observed a write to endpoint 1 / `0xFCC0` / `0x00A0`, uint
 04 5f 11 <TSN> 02 a0 00 20 01
 ```
 
-This converter does not send that write on interview, re-interview, startup, announce, or configure. Its effect needs a separate Zigbee2MQTT experiment before it can be considered for inclusion.
+The converter sends this write after each successful interview, including an explicit re-interview of an already paired FP400. It does not send it on startup, announce, configure, or a started/failed interview. The write is independent of the `native_zones` option and uses a numeric cluster/attribute, so it does not require a custom cluster registration.
+
+Herdsman waits for the write response and rejects a timeout or an unsuccessful ZCL status. The error propagates to Zigbee2MQTT's event logger; it does not change the already completed interview's status. There is no additional retry or saved initialization flag.
 
 Evidence from 28 October 2026:
 
 - Aqara M3 pairing, frame 614: `045f117902a0002001`; frame 616: Write Attributes SUCCESS.
 - Homey pairing reproduction, frame 9588: `045f111502a0002001`; frame 9596: SUCCESS.
-- After the Homey write, unsolicited Report Attributes frames reported room count 2, zone count 1, then room count 2→1 and zone count 1→0.
+- Before the write was added on Homey, standard occupancy reports worked, but automatic installation-status and people-count updates were not observed.
+- After the Homey write, unsolicited Report Attributes frames reported installation settings/status, room count 2 and zone count 1, then room count 2→1 and zone count 1→0 without polling. Standard Configure Reporting for installation status and count still returned `UNREPORTABLE_ATTRIBUTE (0x8C)`.
 
 This establishes the observed initialization sequence and subsequent reports. The internal meaning of `0x00A0` is not documented; it should not be named as a proven "enable reports" bit. The capture does not establish a need to repeat it on every restart.
+
+The benefit on Zigbee2MQTT still needs a hardware comparison. Compare a fresh pairing without and with this write, record the sensor firmware and coordinator, and check the write response and subsequent installation/count reports. Use Zigbee debug logs or a packet capture to distinguish unsolicited reports from read responses: the existing polling remains enabled. Re-interview exercises the write on an existing installation, but is not a fresh-pairing comparison and its repeated sensor-side effect is not yet established.
 
 ## AttributeSync reports
 

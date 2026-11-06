@@ -1404,6 +1404,10 @@ export default {
     ],
     // Tracking (re)starts from the 10 s poll below: on 'start' this hook runs before the custom clusters exist.
     onEvent: async(event)=>{
+        if (event.type === 'deviceInterview' && event.data.status === 'successful') {
+            // Match the M3 pairing initialization observed before unsolicited installation and count reports.
+            await event.data.device.getEndpoint(1).write(0xfcc0, {0x00a0: {value: 1, type: 0x20}}, {...manufacturerOptions, disableDefaultResponse: false});
+        }
         // The sensor announces itself when power returns, with its areas and mounting forgotten.
         if(event.type==='deviceAnnounce') {restoreChecked.delete(event.data.device.ieeeAddr);restoreProgress.delete(event.data.device.ieeeAddr);}
         if(event.type==='stop') {

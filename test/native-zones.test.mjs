@@ -150,7 +150,7 @@ test('failed metadata save prevents sending, and failed final save never publish
     await stop(device); await stop(second);
 });
 
-test('an interrupted save becomes retryable error at start; start, announce and successful interview never write A0', async () => {
+test('an interrupted save becomes retryable error at start; startup and announce do not write A0', async () => {
     const device = sensor([[1, 7]]);
     device.meta.fp400NativeZones = {1: {config, status: 'pending', error: ''}};
     await start(device);
@@ -158,10 +158,33 @@ test('an interrupted save becomes retryable error at start; start, announce and 
     await readNativeZoneMap(device);
     assert.equal(nativeZoneState(device).native_zone_1_config, 'unmanaged');
     await definition.onEvent({type: 'deviceAnnounce', data: {device}});
-    await definition.onEvent({type: 'deviceInterview', data: {device, status: 'started'}});
-    assert.equal(device.writes.length, 0);
-    await definition.onEvent({type: 'deviceInterview', data: {device, status: 'successful'}});
     assert.deepEqual(device.writes, []);
+    await stop(device);
+});
+
+test('successful interviews send the captured Aqara initialization write, including explicit re-interview', async () => {
+    const device = sensor();
+    const interview = status => model.onEvent({type: 'deviceInterview', data: {device, status}});
+    for (const status of ['started', 'failed']) await interview(status);
+    assert.deepEqual(device.writes, []);
+    const expected = [1, 0xfcc0, {0x00a0: {value: 1, type: 0x20}}, {manufacturerCode: 0x115f, disableDefaultResponse: false}];
+    await interview('successful');
+    assert.deepEqual(device.writes, [expected]);
+    const [, cluster, attributes, options] = device.writes[0];
+    const payload = Object.entries(attributes).map(([id, {type, value}]) => ({attrId: Number(id), dataType: type, attrData: value}));
+    const frame = Zcl.Frame.create(0, 0, options.disableDefaultResponse, options.manufacturerCode, 0x79,
+        'write', cluster, payload, device.customClusters);
+    // Aqara M3 pairing, 28 October 2026, frame 614; its Write Attributes response was SUCCESS.
+    assert.equal(frame.toBuffer().toString('hex'), '045f117902a0002001');
+    await interview('successful');
+    assert.deepEqual(device.writes, [expected, expected]);
+    await stop(device);
+});
+
+test('pairing initialization write failures reach the event caller without a local retry', async () => {
+    const device = sensor(); device.failWrite = true;
+    await assert.rejects(model.onEvent({type: 'deviceInterview', data: {device, status: 'successful'}}), /write failed/);
+    assert.equal(device.writes.length, 1);
     await stop(device);
 });
 
