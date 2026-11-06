@@ -6,14 +6,18 @@ const configure = device => fp400ReportingSlots.configure[0](device, {ID: 1});
 const zone = id => [{elmType: 0x20, elmVal: id}, {elmType: 0x30, elmVal: 0}, {elmType: 0x41, elmVal: Buffer.alloc(40)}, {elmType: 0x10, elmVal: 1}];
 
 // A fake FP400 with its five-entry reporting table, filled the way converter 0.4 left it.
-function fakeSensor({zones = [], zonesReadable = true, lightFails = false} = {}) {
+function fakeSensor({zones = [], zonesReadable = true, lightFails = false, writeFails = false} = {}) {
     const table = new Set(['1/msOccupancySensing', '3/msOccupancySensing', '4/msOccupancySensing', '5/msOccupancySensing', '6/msOccupancySensing']);
-    const reads = [];
+    const reads = [], writes = [];
     const device = {
-        ieeeAddr: `report-${Math.random()}`, meta: {}, saves: 0, table, reads,
+        ieeeAddr: `report-${Math.random()}`, meta: {}, saves: 0, table, reads, writes,
         save() {this.saves++;},
         getEndpoint: id => ({
             bind: async () => {},
+            write: async (...args) => {
+                writes.push([id, ...args]);
+                if (writeFails) throw new Error('Timeout');
+            },
             configureReporting: async (cluster, [{maximumReportInterval}]) => {
                 const entry = `${id}/${cluster}`;
                 if (maximumReportInterval === 0xffff) table.delete(entry);
@@ -118,4 +122,15 @@ test('a native zone timeout can be 0 although the sensor reports 10 s as its min
     assert.deepEqual(result, {state: {zone_1_absence_timeout: 0}});
     assert.deepEqual(written, [0]);
     await assert.rejects(control.convertSet(null, 'zone_1_absence_timeout', 301, {device}), /0\.\.300/);
+});
+
+test('configure sends the pairing initialization write, and a failed one still sets up reporting', async () => {
+    const initialization = [1, 0xfcc0, {0x00a0: {value: 1, type: 0x20}}, {manufacturerCode: 0x115f, disableDefaultResponse: false}];
+    const device = fakeSensor();
+    await configure(device);
+    assert.deepEqual(device.writes, [initialization]);
+    const failing = fakeSensor({writeFails: true});
+    await configure(failing);
+    assert.deepEqual(failing.writes, [initialization]);
+    assert.deepEqual(failing.meta.fp400Reporting, {reported: [2], zones: []});
 });

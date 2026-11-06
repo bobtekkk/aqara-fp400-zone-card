@@ -7,6 +7,12 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-06
+
+### Changed
+
+- The people count reaches Home Assistant as soon as it changes, instead of up to 30 s later. The converter now sends the sensor the same setup message Aqara's hub sends when pairing, after which the sensor reports the count by itself. Zigbee2MQTT sends it once when you update to this version, and again whenever the sensor is paired or interviewed. Thanks to [@makleso6](https://github.com/makleso6) ([#17](https://github.com/bobtekkk/aqara-fp400-zone-card/pull/17)).
+
 ## [0.6.1] - 2026-11-03
 
 ### Changed
@@ -126,7 +132,8 @@ Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.4.1...v0.5.0

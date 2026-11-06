@@ -1316,9 +1316,13 @@ async function configureNativeReporting(device, coordinatorEndpoint, endpoints) 
     device.meta.fp400Reporting = {reported, zones};
     device.save();
 }
+// Match the M3 pairing initialization observed before unsolicited installation and count reports.
+const initializeReports = device => device.getEndpoint(1).write(0xfcc0, {0x00a0: {value: 1, type: 0x20}}, {...manufacturerOptions, disableDefaultResponse: false});
 export const fp400ReportingSlots = {
     isModernExtend: true,
     configure: [(device, coordinatorEndpoint) => withDeviceLock(device, async () => {
+        // Sensors paired before the interview write existed get it here, on the update that brings it.
+        try {await initializeReports(device);} catch { /* counts stay polled */ }
         await configureNativeReporting(device, coordinatorEndpoint);
         await publishNative(device);
     })],
@@ -1357,7 +1361,7 @@ export default {
     ota: true,
     description: 'Spatial multi-sensor (presence, illuminance and people count)',
     // The release version, shown on the device page. Zigbee2MQTT runs configure again once when it changes.
-    version: '0.6.1',
+    version: '0.6.2',
     // Numeric-name copies catch reports that arrive before the custom clusters are registered.
     fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400RoomPresence, fp400Tracking, fp400Motion,
         fp400ZoneSettingsReport, fp400ZoneAbsenceReport,
@@ -1404,10 +1408,7 @@ export default {
     ],
     // Tracking (re)starts from the 10 s poll below: on 'start' this hook runs before the custom clusters exist.
     onEvent: async(event)=>{
-        if (event.type === 'deviceInterview' && event.data.status === 'successful') {
-            // Match the M3 pairing initialization observed before unsolicited installation and count reports.
-            await event.data.device.getEndpoint(1).write(0xfcc0, {0x00a0: {value: 1, type: 0x20}}, {...manufacturerOptions, disableDefaultResponse: false});
-        }
+        if (event.type === 'deviceInterview' && event.data.status === 'successful') await initializeReports(event.data.device);
         // The sensor announces itself when power returns, with its areas and mounting forgotten.
         if(event.type==='deviceAnnounce') {restoreChecked.delete(event.data.device.ieeeAddr);restoreProgress.delete(event.data.device.ieeeAddr);}
         if(event.type==='stop') {

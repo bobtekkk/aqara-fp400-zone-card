@@ -48,9 +48,9 @@ The M3/Homey research observed a write to endpoint 1 / `0xFCC0` / `0x00A0`, uint
 04 5f 11 <TSN> 02 a0 00 20 01
 ```
 
-The converter sends this write after each successful interview, including an explicit re-interview of an already paired FP400. It does not send it on startup, announce, configure, or a started/failed interview. The write is independent of the `native_zones` option and uses a numeric cluster/attribute, so it does not require a custom cluster registration.
+The converter sends this write after each successful interview, including an explicit re-interview of an already paired FP400, and in configure. Zigbee2MQTT runs configure once when the converter's version changes, so a sensor paired before 0.6.2 gets the write on that update. It is not sent on startup, announce, or a started/failed interview. The write is independent of the `native_zones` option and uses a numeric cluster/attribute, so it does not require a custom cluster registration.
 
-Herdsman waits for the write response and rejects a timeout or an unsuccessful ZCL status. The error propagates to Zigbee2MQTT's event logger; it does not change the already completed interview's status. There is no additional retry or saved initialization flag.
+Herdsman waits for the write response and rejects a timeout or an unsuccessful ZCL status. After an interview, the error propagates to Zigbee2MQTT's event logger; it does not change the already completed interview's status. In configure, a failure is ignored so the reporting setup still runs, and the counts stay polled. There is no additional retry or saved initialization flag.
 
 Evidence from 28 October 2026:
 
@@ -61,7 +61,13 @@ Evidence from 28 October 2026:
 
 This establishes the observed initialization sequence and subsequent reports. The internal meaning of `0x00A0` is not documented; it should not be named as a proven "enable reports" bit. The capture does not establish a need to repeat it on every restart.
 
-The benefit on Zigbee2MQTT still needs a hardware comparison. Compare a fresh pairing without and with this write, record the sensor firmware and coordinator, and check the write response and subsequent installation/count reports. Use Zigbee debug logs or a packet capture to distinguish unsolicited reports from read responses: the existing polling remains enabled. Re-interview exercises the write on an existing installation, but is not a fresh-pairing comparison and its repeated sensor-side effect is not yet established.
+Zigbee2MQTT comparison, 4 to 5 November 2026 (firmware 20260724, Zigbee2MQTT 2.14.2, Ember coordinator), after a re-interview of an already paired FP400 rather than a fresh pairing:
+
+- Before the write (3 days, 202 changes), the room's people count reached Zigbee2MQTT 0 to 30 s after the target count, median 13.7 s: only the 30 s poll picked it up. A 5 minute debug log showed `humanCount` only in read responses.
+- After the write (overnight, 9 changes), every change arrived within 0.6 s of the target count.
+- On Homey, the count kept arriving unprompted after the sensor was unplugged and plugged back in.
+
+The polling stays enabled, so sensors that never get the write keep working as before.
 
 ## AttributeSync reports
 
