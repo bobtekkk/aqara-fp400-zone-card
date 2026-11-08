@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,draftMask,turn,rangeBox,opPoints,opBits,findDevice,FP400ZoneCard} from '../dist/fp400-zone-card.js';
+import {normalizeZone,rectangleFromPoints,moveRectangle,fitView,parseTargets,rectBits,draftMask,turn,rangeBox,opPoints,opBits,findDevice,FP400ZoneCard,mapLimits} from '../dist/fp400-zone-card.js';
 const desk={name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3};
 test('grid drawing works in every drag direction and snaps to half metres',()=>{
  assert.deepEqual(rectangleFromPoints({x:114,y:174},{x:-112,y:21}),{x_min:-100,x_max:100,y_min:0,y_max:150});
@@ -35,6 +35,16 @@ test('turned maps: points turn around the sensor, and the range box turns with t
  assert.deepEqual(rangeBox(90),{x_min:-50,x_max:1000,y_min:-400,y_max:400});
  const b=rangeBox(45);assert.deepEqual(fitView([],45),{x:b.x_min,y:b.y_min,width:b.x_max-b.x_min,height:b.y_max-b.y_min},'an empty turned map shows the whole range');
  assert.deepEqual(fitView([]),{x:-300,y:-50,width:600,height:600});
+});
+test('a ceiling sensor gets a map all around it, so zones can go behind it',()=>{
+ const ceiling=mapLimits('ceiling');
+ assert.deepEqual(mapLimits('wall'),rangeBox(0));assert.deepEqual(mapLimits(undefined),rangeBox(0));
+ assert.deepEqual(rangeBox(0,ceiling),{x_min:-600,x_max:600,y_min:-600,y_max:600});
+ assert.deepEqual(rangeBox(90,ceiling),{x_min:-600,x_max:600,y_min:-600,y_max:600});
+ assert.deepEqual(fitView([],0,ceiling),{x:-300,y:-300,width:600,height:600},'the sensor sits in the middle of an empty map');
+ assert.deepEqual(fitView([{x:100,y:300}],0,ceiling),{x:-190,y:-360,width:380,height:760},'Fit keeps the sensor in the middle');
+ assert.deepEqual(rectangleFromPoints({x:-310,y:-190},{x:90,y:-560},50,rangeBox(0,ceiling)),{x_min:-300,x_max:100,y_min:-550,y_max:-200});
+ assert.deepEqual(rectangleFromPoints({x:0,y:-190},{x:100,y:-560}),{x_min:0,x_max:100,y_min:-50,y_max:-50},'on a wall the map still stops just behind the sensor');
 });
 test('zones keep the turn of the map they were drawn on',()=>{
  assert.equal(normalizeZone({...desk,rotation:45}).rotation,45);

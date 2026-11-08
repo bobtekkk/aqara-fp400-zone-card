@@ -517,6 +517,33 @@ const scenarios = {
         check('RB1 Turn the map is saved with the sensor and turns the map', r.frame === 'rotate(-45)' && r.call.service === 'set_value' && r.call.value === -45, r);
         noErrors('RB2', page); await page.close();
     },
+    async RG() { // issue #16: a ceiling sensor sees behind itself, so zones can go there
+        const page = await open('?latency=100');
+        const mount = async value => {
+            await btn(page, 'settings').first().click();
+            await setting(page, 'installation_mode').selectOption(value); await waitMessage(page, /Saved: Mounted on/);
+            await page.locator('fp400-zone-card #settings [data-action="settings"]').click();
+        };
+        await mount('ceiling');
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card').limits.y_min === -600);
+        const map = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'), r = c.shadowRoot, range = r.querySelector('#range');
+            return {range: ['x', 'y', 'width', 'height'].map(a => Number(range.getAttribute(a))), cone: r.querySelector('#view-cone').getAttribute('visibility'), view: c.view}; });
+        check('RG1 on the ceiling the map reaches 6 m all around the sensor and the view centres on it', JSON.stringify(map.range) === '[-600,-600,1200,1200]' && map.cone === 'hidden' && map.view.y < 0 && map.view.y + map.view.height > 0, map);
+        await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); c.view = {x: -600, y: -600, width: 1200, height: 1200}; c.render(); });
+        await btn(page, 'draw').click();
+        await drag(page, [-300, -200], [100, -550]);
+        await btn(page, 'save').click(); await waitIdle(page);
+        const saved = await page.evaluate(() => JSON.parse(document.querySelector('fp400-zone-card')._hass.states['text.0x54ef440000000001_software_zone_3_config'].state));
+        check('RG2 a zone drawn behind the sensor is saved there', saved.x_min === -300 && saved.x_max === 100 && saved.y_min === -550 && saved.y_max === -200, saved);
+        await btn(page, 'areas').click();
+        check('RG3 painting areas says they only reach the side the arrow points to', /arrow points to/.test((await st(page)).message), (await st(page)).message);
+        await page.keyboard.press('Escape');
+        await mount('wall');
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card').limits.y_min === -50);
+        const back = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {zone: c.drafts[3], dirty: c.dirty.size, cone: c.shadowRoot.querySelector('#view-cone').getAttribute('visibility')}; });
+        check('RG4 back on the wall the zone stays as saved', back.zone?.y_min === -550 && back.dirty === 0 && back.cone === 'visible', back);
+        noErrors('RG5', page); await page.close();
+    },
     async RC() { // issue #2: the card still names a sensor that was renamed
         const page = await open('?device=old_name');
         const r = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {device: c.device, zones: Object.values(c.drafts).filter(Boolean).length, message: c.shadowRoot.querySelector('#message').textContent}; });

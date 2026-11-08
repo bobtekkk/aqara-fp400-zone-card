@@ -7,6 +7,12 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-08
+
+### Added
+
+- **Sensor on the ceiling:** with **Mounted on** set to Ceiling in ⚙ Settings, the map puts the sensor in the middle and reaches 6 m all around it, so zones can go behind it too, for example to leave out a hallway the sensor can see. **Fit** keeps the sensor in the middle. The sensor's own areas still only reach the side its arrow points to. Thanks to [@mattrhurst](https://github.com/mattrhurst) ([#16](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/16)).
+
 ## [0.6.2] - 2026-11-06
 
 ### Changed
@@ -132,7 +138,8 @@ Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.5.0...v0.6.0

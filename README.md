@@ -18,6 +18,7 @@ Draw presence zones, doorways and "ghost" spots for the **Aqara FP400** spatial 
 - **Movement events.** Enter, leave, approach, away and left/right events from the sensor, ready for automations.
 - **Live map.** See tracked people move, with metre rulers. Pan, zoom and snap to a 0.5 m or 0.1 m grid.
 - **Sensor in a corner?** Turn the map so the room looks square, and draw zones along its walls.
+- **Sensor on the ceiling?** The map puts it in the middle, so you can draw zones all around it.
 - **Safe editing.** Nothing changes until you press Save, and the card only says "Saved" once the sensor confirms it.
 
 **No Matter or Thread hardware needed.** Everything runs over Zigbee, on the Zigbee coordinator you already use with Zigbee2MQTT. No Thread border router, no Matter controller, no Aqara hub.
@@ -149,6 +150,7 @@ payload, including values that Home Assistant has not discovered as entities.
 - **A dot you don't trust**: click it. **Forget this target** makes the sensor drop it (a real person comes back within seconds). **Ignore this spot** adds a 1 × 1 m ignore spot around it, for you to save.
 - **⚙ Settings** (top right) changes the sensor's settings. They apply right away.
 - **Sensor in a corner?** In ⚙ Settings, set **Turn the map** (try 45 or -45) until the room looks square. Zones you draw after that follow the room's walls; zones drawn before stay exactly where they were.
+- **Sensor on the ceiling?** In ⚙ Settings, set **Mounted on** to Ceiling. The map then reaches 6 m all around the sensor, so zones can go behind it too, for example to leave out a hallway. The sensor's own areas (ignore spots, doorways, outside room) only reach the side its arrow points to.
 - Drag empty space to pan, use the mouse wheel to zoom, drag a zone to move it and its corners to resize it. Arrow keys nudge the selected zone.
 - **Discard** throws away everything you have not saved.
 

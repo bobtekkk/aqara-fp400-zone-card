@@ -1361,7 +1361,7 @@ export default {
     ota: true,
     description: 'Spatial multi-sensor (presence, illuminance and people count)',
     // The release version, shown on the device page. Zigbee2MQTT runs configure again once when it changes.
-    version: '0.6.2',
+    version: '0.6.3',
     // Numeric-name copies catch reports that arrive before the custom clusters are registered.
     fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400RoomPresence, fp400Tracking, fp400Motion,
         fp400ZoneSettingsReport, fp400ZoneAbsenceReport,
