@@ -96,10 +96,10 @@ const sim = page => page.evaluate(key => {
 const calls = page => page.evaluate(() => window.__sim.calls.filter(c => !/_(interference|entry_exit|edge)_/.test(c.entity_id)).map(c => ({...c, entity_id: c.entity_id.replace('0x54ef440000000001_', '')})));
 const waitIdle = (page, ms = 25000) => page.waitForFunction(() => !document.querySelector('fp400-zone-card').saving, null, {timeout: ms});
 const waitMessage = (page, re, ms = 10000) => page.waitForFunction(src => new RegExp(src).test(document.querySelector('fp400-zone-card').shadowRoot.querySelector('#message').textContent), re.source, {timeout: ms});
-function bitsOf(rects) {
+function bitsOf(rects, start = 0) {
     const set = new Set();
     for (const [x0, x1, y0, y1] of rects) {
-        for (let row = Math.max(0, Math.floor(y0 / 50)); row <= Math.min(19, Math.ceil(y1 / 50) - 1); row++)
+        for (let row = Math.max(0, Math.floor((y0 - start) / 50)); row <= Math.min(19, Math.ceil((y1 - start) / 50) - 1); row++)
             for (let col = Math.max(0, 8 - Math.ceil(x1 / 50)); col <= Math.min(15, 7 - Math.floor(x0 / 50)); col++) set.add(row * 16 + col);
     }
     return set;
@@ -535,14 +535,21 @@ const scenarios = {
         await btn(page, 'save').click(); await waitIdle(page);
         const saved = await page.evaluate(() => JSON.parse(document.querySelector('fp400-zone-card')._hass.states['text.0x54ef440000000001_software_zone_3_config'].state));
         check('RG2 a zone drawn behind the sensor is saved there', saved.x_min === -300 && saved.x_max === 100 && saved.y_min === -550 && saved.y_max === -200, saved);
+        // #19: on the ceiling the sensor's area grid runs from 5 m behind it to 5 m ahead, so areas can go behind it too.
         await btn(page, 'areas').click();
-        check('RG3 painting areas says they only reach the side the arrow points to', /arrow points to/.test((await st(page)).message), (await st(page)).message);
+        check('RG3 painting areas says how far they reach on the ceiling', /5 m in front of and behind/.test((await st(page)).message), (await st(page)).message);
+        await drag(page, [-100, -100], [0, -200]);
+        await btn(page, 'save').click(); await waitIdle(page);
+        const x = await sim(page);
+        check('RG4 an ignore spot painted behind the sensor lands in the rows behind it', sameBits(maskSet(x.mask), bitsOf([[-100, 0, -200, -100]], -500)) && x.calls.at(-1) === 'interference_zone_add={"x_min":-100,"x_max":0,"y_min":-200,"y_max":-100}', x);
+        check('RG5 and is drawn where it was painted', JSON.stringify(await cellBox(page, 'interference')) === '[-100,0,-200,-100]', await cellBox(page, 'interference'));
         await page.keyboard.press('Escape');
         await mount('wall');
         await page.waitForFunction(() => document.querySelector('fp400-zone-card').limits.y_min === -50);
         const back = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {zone: c.drafts[3], dirty: c.dirty.size, cone: c.shadowRoot.querySelector('#view-cone').getAttribute('visibility')}; });
-        check('RG4 back on the wall the zone stays as saved', back.zone?.y_min === -550 && back.dirty === 0 && back.cone === 'visible', back);
-        noErrors('RG5', page); await page.close();
+        check('RG6 back on the wall the zone stays as saved', back.zone?.y_min === -550 && back.dirty === 0 && back.cone === 'visible', back);
+        check('RG7 and the same cells are drawn from the sensor forwards, where a wall sensor uses them', JSON.stringify(await cellBox(page, 'interference')) === '[-100,0,300,400]', await cellBox(page, 'interference'));
+        noErrors('RG8', page); await page.close();
     },
     async RC() { // issue #2: the card still names a sensor that was renamed
         const page = await open('?device=old_name');

@@ -192,35 +192,37 @@ function regionBuffer(value) {
     if (mask.length !== 0 && mask.length !== 40) throw new Error('Unsupported region mask length');
     return mask.length === 0 ? Buffer.alloc(40) : mask;
 }
-// Native grid: 20 rows × 16 columns of 50 cm cells. Rows run near to far from y = 0. Columns run
+// Native grid: 20 rows × 16 columns of 50 cm cells. Rows run near to far from y = y0: 0 on a wall, and -500 on
+// the ceiling, where the grid is centred on the sensor (#19, measured on one sensor at 2.6 m). Columns run
 // right to left: column 0 is x = 350..400 cm and x = 0 is the boundary of columns 7 and 8, as checked
 // against the device's own zone assignment by github.com/RAR/ha-aqara-fp400.
-export function worldToGrid(rect) {
+export const gridStart = mounting => mounting === 'ceiling' ? -500 : 0;
+export function worldToGrid(rect, y0 = 0) {
     const {x_min, x_max, y_min, y_max} = rect ?? {};
     if (![x_min, x_max, y_min, y_max].every(Number.isFinite) || x_min >= x_max || y_min >= y_max) {
         throw new Error('Rectangle needs x_min < x_max and y_min < y_max in centimetres');
     }
     const grid = {
-        row_start: Math.max(0, Math.floor(y_min / 50)),
-        row_end: Math.min(19, Math.ceil(y_max / 50) - 1),
+        row_start: Math.max(0, Math.floor((y_min - y0) / 50)),
+        row_end: Math.min(19, Math.ceil((y_max - y0) / 50) - 1),
         column_start: Math.max(0, 8 - Math.ceil(x_max / 50)),
         column_end: Math.min(15, 7 - Math.floor(x_min / 50)),
     };
     if (grid.row_start > grid.row_end || grid.column_start > grid.column_end) {
-        throw new Error('Rectangle is outside the sensor grid (x -400..400 cm, y 0..1000 cm)');
+        throw new Error(`Rectangle is outside the sensor grid (x -400..400 cm, y ${y0}..${y0 + 1000} cm)`);
     }
     return grid;
 }
 // A shape drawn on a turned map arrives as corner points (cm). It covers the cells whose centre lies inside it.
 // Must match polygonBits in the card (a test checks this).
-export function polygonCells(points) {
+export function polygonCells(points, y0 = 0) {
     if (!Array.isArray(points) || points.length < 3 || points.length > 16 ||
         !points.every(p => Array.isArray(p) && p.length === 2 && p.every(v => Number.isFinite(v) && Math.abs(v) <= 2000))) {
         throw new Error('points must be 3..16 [x, y] pairs in centimetres');
     }
     const bits = [];
     for (let bit = 0; bit < 320; bit++) {
-        const x = 375 - (bit & 15) * 50, y = (bit >> 4) * 50 + 25;
+        const x = 375 - (bit & 15) * 50, y = y0 + (bit >> 4) * 50 + 25;
         let inside = false;
         for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
             const [xi, yi] = points[i], [xj, yj] = points[j];
@@ -228,7 +230,7 @@ export function polygonCells(points) {
         }
         if (inside) bits.push(bit);
     }
-    if (!bits.length) throw new Error('Shape is outside the sensor grid (x -400..400 cm, y 0..1000 cm)');
+    if (!bits.length) throw new Error(`Shape is outside the sensor grid (x -400..400 cm, y ${y0}..${y0 + 1000} cm)`);
     return bits;
 }
 // Region masks and software zones are edited read-modify-write; overlapping edits would overwrite each other.
@@ -454,8 +456,8 @@ const fp400AreaControl = {
             if (value !== 'confirm') throw new Error(`Send 'confirm' to clear every ${area} cell`);
             return writeRegion(meta.device, areaRegions[area], () => Buffer.alloc(40));
         }
-        const shape = typeof value === 'string' ? JSON.parse(value) : value;
-        const bits = shape?.points ? polygonCells(shape.points) : gridBits(worldToGrid(shape));
+        const shape = typeof value === 'string' ? JSON.parse(value) : value, y0 = gridStart(meta.state?.installation_mode);
+        const bits = shape?.points ? polygonCells(shape.points, y0) : gridBits(worldToGrid(shape, y0));
         return writeRegion(meta.device, areaRegions[area], mask => setCells(mask, bits, key.endsWith('_add')));
     },
 };
