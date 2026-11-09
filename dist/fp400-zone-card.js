@@ -116,15 +116,17 @@ export function fitView(points,deg=0,limits=LIMITS) {
     const y1=clamp(Math.min(...points.map(p=>p.y))-60,box.y_min,box.y_max-200), y2=clamp(Math.max(...points.map(p=>p.y))+100,box.y_min+200,box.y_max);
     return {x:x1,y:y1,width:Math.max(300,x2-x1),height:Math.max(300,y2-y1)};
 }
-// The sensor's area masks: 20 rows x 16 columns of 50 cm cells covering x -400..400, y 0..1000.
+// The sensor's area masks: 20 rows x 16 columns of 50 cm cells covering x -400..400 and 10 m of y from y0.
 // Columns run right to left (column 0 is x = 350..400). Must match worldToGrid in z2m/aqara-fp400.mjs (a test checks this).
-export function rectBits(r){
-    const r0=Math.max(0,Math.floor(r.y_min/50)),r1=Math.min(19,Math.ceil(r.y_max/50)-1);
+// On a wall the rows start at the sensor; on the ceiling they start 5 m behind it, so the sensor sits in the middle (#19).
+export const gridStart = mounting => mounting==='ceiling'?-500:0;
+export function rectBits(r,y0=0){
+    const r0=Math.max(0,Math.floor((r.y_min-y0)/50)),r1=Math.min(19,Math.ceil((r.y_max-y0)/50)-1);
     const c0=Math.max(0,8-Math.ceil(r.x_max/50)),c1=Math.min(15,7-Math.floor(r.x_min/50));
     const bits=[];for(let row=r0;row<=r1;row++)for(let col=c0;col<=c1;col++)bits.push(row*16+col);
     return bits;
 }
-const cellOf = bit => ({x_min:350-(bit&15)*50,x_max:400-(bit&15)*50,y_min:(bit>>4)*50,y_max:(bit>>4)*50+50});
+const cellOf = (bit,y0=0) => ({x_min:350-(bit&15)*50,x_max:400-(bit&15)*50,y_min:y0+(bit>>4)*50,y_max:y0+(bit>>4)*50+50});
 export function maskBits(hex){
     if(typeof hex!=='string'||!/^[0-9a-f]{80}$/i.test(hex))return null;
     const bits=new Set();
@@ -133,10 +135,10 @@ export function maskBits(hex){
 }
 // A shape painted on a turned map covers the cells whose centre lies inside it.
 // Must match polygonCells in z2m/aqara-fp400.mjs (a test checks this).
-export function polygonBits(points){
+export function polygonBits(points,y0=0){
     const bits=[];
     for(let bit=0;bit<320;bit++){
-        const x=375-(bit&15)*50,y=(bit>>4)*50+25;let inside=false;
+        const x=375-(bit&15)*50,y=y0+(bit>>4)*50+25;let inside=false;
         for(let i=0,j=points.length-1;i<points.length;j=i++){
             const [xi,yi]=points[i],[xj,yj]=points[j];
             if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)inside=!inside;
@@ -150,11 +152,11 @@ export function opPoints(op){
     const r=op.rect;
     return [[r.x_min,r.y_min],[r.x_max,r.y_min],[r.x_max,r.y_max],[r.x_min,r.y_max]].map(([x,y])=>{const p=turn({x,y},op.rotation??0);return [Math.round(p.x*10)/10||0,Math.round(p.y*10)/10||0];});
 }
-export const opBits=op=>op.rotation?polygonBits(opPoints(op)):rectBits(op.rect);
+export const opBits=(op,y0=0)=>op.rotation?polygonBits(opPoints(op),y0):rectBits(op.rect,y0);
 // What a mask will hold after Save: an optional clear, then each painted (add) or erased (remove) shape in order.
-export function draftMask(saved,clear=false,ops=[]){
+export function draftMask(saved,clear=false,ops=[],y0=0){
     const bits=new Set(clear?[]:saved??[]);
-    for(const op of ops)for(const bit of opBits(op))op.op==='remove'?bits.delete(bit):bits.add(bit);
+    for(const op of ops)for(const bit of opBits(op,y0))op.op==='remove'?bits.delete(bit):bits.add(bit);
     return bits;
 }
 // Entity IDs look like text.<device>_software_zone_1_config; <device> is the FP400's friendly name in Zigbee2MQTT.
@@ -177,8 +179,8 @@ export function registryFp400s(entries){
     return Object.values(devices).filter(d=>d.keys['text.software_zone_1_config'])
         .map(d=>({...d,label:/^text\.([a-z0-9_]+)_software_zone_1_config$/.exec(d.keys['text.software_zone_1_config'])?.[1]??d.ieee}));
 }
-export function clampBlock(r){
-    const c={x_min:Math.max(-400,r.x_min),x_max:Math.min(400,r.x_max),y_min:Math.max(0,r.y_min),y_max:Math.min(1000,r.y_max)};
+export function clampBlock(r,y0=0){
+    const c={x_min:Math.max(-400,r.x_min),x_max:Math.min(400,r.x_max),y_min:Math.max(y0,r.y_min),y_max:Math.min(y0+1000,r.y_max)};
     return c.x_max-c.x_min>=50&&c.y_max-c.y_min>=50?c:null;
 }
 const areaPattern=(uid,type,color)=>type==='edge'
@@ -195,7 +197,7 @@ header{padding:16px 24px 14px;display:flex;justify-content:space-between;align-i
 
 export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     constructor(){
-        super();this.attachShadow({mode:'open'});this.saved={};this.drafts={};this.base={};this.dirty=new Set();this.loaded=new Set();this.selected=null;this.mode='select';this.snap=50;this.view={x:-300,y:-50,width:600,height:600};this.limits=LIMITS;this.saving=false;
+        super();this.attachShadow({mode:'open'});this.saved={};this.drafts={};this.base={};this.dirty=new Set();this.loaded=new Set();this.selected=null;this.mode='select';this.snap=50;this.view={x:-300,y:-50,width:600,height:600};this.limits=LIMITS;this.gridY0=0;this.saving=false;
         this.zoneMode='software';this.nativeTool='add';this.overwriteNative=new Set();this.panel='zones';this.areaType='interference';this.areaTool='add';this.pendingAreas=[];this.pendingClears=new Set();this.target=null;this.targetAt=null;this.forgetting=null;this.busy={};this.rotation=0;this.loadingGrace=15000;this.uid=`fp${Math.random().toString(36).slice(2)}`;
         this.mqttBaseTopic='zigbee2mqtt';this.mqttFriendlyName=null;this.mqttGeneration=0;
         this.mqttKey=null;this.mqttTopic=null;this.mqttConnection=null;this.mqttUnsub=null;
@@ -389,7 +391,8 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     sync(){
         let changed=false;this.startedAt??=Date.now();
         // The map turn is kept with the sensor (converter 0.3+), so every dashboard shows the room the same way.
-        const limits=mapLimits(this.state('select','installation_mode'));
+        const mounting=this.state('select','installation_mode'),limits=mapLimits(mounting),gridY0=gridStart(mounting);
+        if(gridY0!==this.gridY0){this.gridY0=gridY0;changed=true;}
         if(limits!==this.limits){this.limits=limits;if(this.firstFit)this.view=fitView(this.mapPoints(),this.rotation,limits);changed=true;}
         const turned=Number(this.state('number','map_rotation')),rotation=Number.isFinite(turned)&&Math.abs(turned)<=180?turned:0;
         if(rotation!==this.rotation){this.rotation=rotation;if(this.firstFit)this.view=fitView(this.mapPoints(),rotation,this.limits);changed=true;}
@@ -466,17 +469,17 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     // Everything worth showing, in map coordinates. Outside-room cells are not part of the room, so they don't widen the view.
     mapPoints(){
         const corners=(r,deg)=>[[r.x_min,r.y_min],[r.x_max,r.y_min],[r.x_max,r.y_max],[r.x_min,r.y_max]].map(([x,y])=>turn({x,y},deg-this.rotation));
-        return [...Object.values(this.drafts).filter(z=>z&&z!=='unmanaged').flatMap(z=>this.native?[...maskBits(z.mask_hex)].flatMap(bit=>corners(cellOf(bit),0)):corners(z,z.rotation??0)),
+        return [...Object.values(this.drafts).filter(z=>z&&z!=='unmanaged').flatMap(z=>this.native?[...maskBits(z.mask_hex)].flatMap(bit=>corners(cellOf(bit,this.gridY0),0)):corners(z,z.rotation??0)),
             ...this.pendingAreas.filter(o=>o.type!=='edge'&&o.op==='add').flatMap(o=>corners(o.rect,o.rotation??0)),
-            ...['interference','entry_exit'].flatMap(t=>[...this.draftBits(t)].flatMap(bit=>corners(cellOf(bit),0))),
+            ...['interference','entry_exit'].flatMap(t=>[...this.draftBits(t)].flatMap(bit=>corners(cellOf(bit,this.gridY0),0))),
             ...(this.fresh()?this.targets():[]).map(t=>turn(t,-this.rotation))];
     }
     // An area drag as it will be saved: trimmed to the sensor grid on a straight map; on a turned map it must cover a cell.
     areaRect(r){
-        if(!this.rotation)return clampBlock(r);
-        return r.x_max-r.x_min>=50&&r.y_max-r.y_min>=50&&polygonBits(opPoints({rect:r,rotation:this.rotation})).length?r:null;
+        if(!this.rotation)return clampBlock(r,this.gridY0);
+        return r.x_max-r.x_min>=50&&r.y_max-r.y_min>=50&&polygonBits(opPoints({rect:r,rotation:this.rotation}),this.gridY0).length?r:null;
     }
-    areaHelp(){return `Drag on the map to ${this.areaTool==='remove'?'erase':'paint'} ${AREAS[this.areaType].label.toLowerCase()} cells.${this.limits===CEILING_LIMITS?' Areas only reach the side the sensor\'s arrow points to.':''} Click a dashed shape to undo it. Nothing changes until you save.`;}
+    areaHelp(){return `Drag on the map to ${this.areaTool==='remove'?'erase':'paint'} ${AREAS[this.areaType].label.toLowerCase()} cells.${this.gridY0?' On the ceiling, areas reach 5 m in front of and behind the sensor, and 4 m to each side.':''} Click a dashed shape to undo it. Nothing changes until you save.`;}
     cancelAreas(){
         const n=this.pendingAreas.length+this.pendingClears.size;this.pendingAreas=[];this.pendingClears.clear();this.mode='select';
         this.notice(n?`${n} unsaved area edit${n===1?'':'s'} removed.`:'Areas closed.');this.render();
@@ -484,7 +487,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     // An area type can be edited when its controls exist and its current mask is known.
     areaReady(type){return this.available('text',`${type}_zone_add`)&&this.available('text',`${type}_clear`)&&maskBits(this.areaMask(type))!==null;}
     areaMask(type){return this.trackingValue(`${type}_mask_hex`)??this.state('text',`${type}_mask_hex`);}
-    draftBits(type){return draftMask(maskBits(this.areaMask(type)),this.pendingClears.has(type),this.pendingAreas.filter(o=>o.type===type));}
+    draftBits(type){return draftMask(maskBits(this.areaMask(type)),this.pendingClears.has(type),this.pendingAreas.filter(o=>o.type===type),this.gridY0);}
     freeId(){for(let id=1;id<=8;id++)if(this.loaded.has(id)&&!this.drafts[id]&&(!this.native||(this.nativeStatus(id)==='ready'&&this.nativeEditable(id))))return id;return null;}
     point(event){const p=this.svg.createSVGPoint();p.x=event.clientX;p.y=event.clientY;const m=this.svg.getScreenCTM();if(!m)return {x:0,y:0};const v=p.matrixTransform(m.inverse());return {x:v.x,y:-v.y};}
     pointerDown(event){
@@ -527,7 +530,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             const rect=this.areaRect(rectangleFromPoints(d.start,p,50,rangeBox(this.rotation,this.limits)));
             const original=d.original&&d.original!=='unmanaged'?d.original:null;
             const bits=new Set(original?maskBits(original.mask_hex):[]);
-            if(rect)for(const bit of opBits({rect,rotation:this.rotation}))d.tool==='remove'?bits.delete(bit):bits.add(bit);
+            if(rect)for(const bit of opBits({rect,rotation:this.rotation},this.gridY0))d.tool==='remove'?bits.delete(bit):bits.add(bit);
             if(bits.size)this.mark(d.id,{name:original?.name??`Zone ${d.id}`,mask_hex:maskHex(bits)});
             else this.mark(d.id,d.original);
             d.empty=Boolean(original)&&!bits.size;
@@ -641,7 +644,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         const shapes=Object.entries(this.drafts).filter(([,z])=>z&&z!=='unmanaged').map(([id,z])=>{
             if(this.native){
                 const c=COLORS[id-1],dirty=this.dirty.has(Number(id)),occupied=!dirty&&this.zoneLive(id)&&this.state('binary_sensor',this.zoneKey(id,'occupancy'))==='on';
-                return `<g data-map-zone="${id}" transform="rotate(${this.rotation})">${[...maskBits(z.mask_hex)].map(bit=>{const r=cellOf(bit);return `<rect x="${r.x_min}" y="${-r.y_max}" width="50" height="50" fill="${c}" fill-opacity="${occupied?.4:.18}" stroke="${c}" stroke-width="${Number(id)===this.selected?2:1}" ${dirty?'stroke-dasharray="4 3"':''} vector-effect="non-scaling-stroke"/>`;}).join('')}</g>`;
+                return `<g data-map-zone="${id}" transform="rotate(${this.rotation})">${[...maskBits(z.mask_hex)].map(bit=>{const r=cellOf(bit,this.gridY0);return `<rect x="${r.x_min}" y="${-r.y_max}" width="50" height="50" fill="${c}" fill-opacity="${occupied?.4:.18}" stroke="${c}" stroke-width="${Number(id)===this.selected?2:1}" ${dirty?'stroke-dasharray="4 3"':''} vector-effect="non-scaling-stroke"/>`;}).join('')}</g>`;
             }
             const selected=Number(id)===this.selected,c=COLORS[id-1],dirty=this.dirty.has(Number(id)),occupied=!dirty&&this.state('binary_sensor',`software_zone_${id}_occupancy`)==='on'&&this.zoneLive(id);
             const w=z.x_max-z.x_min,h=z.y_max-z.y_min;
@@ -660,7 +663,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         for(const type of Object.keys(AREAS).reverse()){
             const saved=maskBits(this.areaMask(type))??new Set(),draft=this.draftBits(type);
             for(const bit of new Set([...saved,...draft])){
-                const c=cellOf(bit);
+                const c=cellOf(bit,this.gridY0);
                 cells+=`<rect class="area-cell${!draft.has(bit)?' gone':saved.has(bit)?'':' new'}" data-type="${type}" x="${c.x_min}" y="${-c.y_max}" width="50" height="50" fill="url(#${this.uid}-${type})" stroke="${AREAS[type].color}55" stroke-width=".7" vector-effect="non-scaling-stroke"/>`;
             }
         }
@@ -853,7 +856,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     // A 1 x 1 m ignore spot around where the target was seen, left unsaved so it can be checked first.
     ignoreSpot(){
         const a=this.targetAt;if(!a)return;
-        const x=Math.round(a.x/50)*50,y=Math.round(a.y/50)*50,rect=clampBlock({x_min:x-50,x_max:x+50,y_min:y-50,y_max:y+50});
+        const x=Math.round(a.x/50)*50,y=Math.round(a.y/50)*50,rect=clampBlock({x_min:x-50,x_max:x+50,y_min:y-50,y_max:y+50},this.gridY0);
         if(!rect){this.notice('That spot is outside the sensor grid.','error');return;}
         this.pendingAreas.push({type:'interference',op:'add',rect});
         this.notice(`Marked 1 × 1 m around target ${this.target+1} to ignore. Save to apply, or click the dashed square to undo.`);
@@ -955,7 +958,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             // The converter edits a mask read-modify-write, so each edit must land before the next is sent.
             const total=this.pendingAreas.length;
             for(let n=1;this.pendingAreas.length;n++){
-                const edit=this.pendingAreas[0],{type}=edit,remove=edit.op==='remove',need=opBits(edit),have=maskBits(this.areaMask(type));
+                const edit=this.pendingAreas[0],{type}=edit,remove=edit.op==='remove',need=opBits(edit,this.gridY0),have=maskBits(this.areaMask(type));
                 const done=bits=>need.every(bit=>bits.has(bit)===!remove);
                 if(!have||!done(have)){
                     this.notice(`Saving area edit ${n} of ${total}…`);

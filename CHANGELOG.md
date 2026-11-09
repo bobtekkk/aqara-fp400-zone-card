@@ -7,6 +7,10 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sensor on the ceiling:** ignore spots, doorways and outside-room areas are drawn and painted where the sensor uses them. On the ceiling the sensor's area grid is centred on it, from 5 m behind to 5 m ahead, so these areas can go behind it too. They used to be drawn 5 m too far ahead, and since 0.6.3 some were not drawn at all. Thanks to [@markomartinec7-stack](https://github.com/markomartinec7-stack) for measuring it ([#19](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/19)).
+
 ## [0.6.3] - 2026-11-08
 
 ### Added

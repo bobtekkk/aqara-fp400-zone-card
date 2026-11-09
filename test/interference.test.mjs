@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import definition, {worldToGrid, fp400Poll, polygonCells} from '../z2m/aqara-fp400.mjs';
-import {rectBits, clampBlock, polygonBits, opPoints} from '../dist/fp400-zone-card.js';
+import definition, {worldToGrid, fp400Poll, polygonCells, gridStart} from '../z2m/aqara-fp400.mjs';
+import {rectBits, clampBlock, polygonBits, opPoints, maskBits, gridStart as cardGridStart} from '../dist/fp400-zone-card.js';
 
 const gridBits = g => {const bits = []; for (let r = g.row_start; r <= g.row_end; r++) for (let c = g.column_start; c <= g.column_end; c++) bits.push(r * 16 + c); return bits;};
 const control = key => definition.toZigbee.find(c => c.key.includes(key));
@@ -109,4 +109,28 @@ test('the map turn is kept with the sensor and published back', async () => {
     assert.deepEqual(published, [{map_rotation: 45}]);
     await assert.rejects(() => mapControl.convertSet(null, 'map_rotation', 200, {device}), /-180..180/);
     assert.equal(device.meta.fp400MapRotation, 45);
+});
+test('on the ceiling the grid is centred on the sensor, in the card and the converter (#19)', async () => {
+    const y0 = gridStart('ceiling');
+    assert.equal(y0, -500); assert.equal(cardGridStart('ceiling'), -500); assert.equal(gridStart('wall'), 0); assert.equal(cardGridStart(undefined), 0);
+    // Masking rows 0-9 kept a person at y = +17 tracked and masking rows 10-19 kept one at y = -27: row 10 is y 0..50.
+    assert.deepEqual(worldToGrid({x_min: -50, x_max: 50, y_min: 0, y_max: 50}, y0), {row_start: 10, row_end: 10, column_start: 7, column_end: 8});
+    // The reporter's two ignore-spot cells (row 12) are 1 to 1.5 m ahead of the sensor, inside the ceiling map.
+    assert.deepEqual([...maskBits('00000000000000000000000000000000000000000000000001800000000000000000000000000000')], rectBits({x_min: -50, x_max: 50, y_min: 100, y_max: 150}, y0));
+    for (const r of [{x_min:-400,x_max:400,y_min:-500,y_max:500}, {x_min:-237,x_max:-101,y_min:-412,y_max:-49}, {x_min:-50,x_max:50,y_min:-600,y_max:-450}]) {
+        assert.deepEqual(rectBits(r, y0), gridBits(worldToGrid(r, y0)), JSON.stringify(r));
+    }
+    for (const rotation of [30, -45, 137]) for (const rect of [{x_min:-200,x_max:150,y_min:-400,y_max:-100}, {x_min:-600,x_max:600,y_min:-600,y_max:600}]) {
+        const points = opPoints({rect, rotation});
+        assert.deepEqual(polygonBits(points, y0), polygonCells(points, y0), `${rotation} ${JSON.stringify(rect)}`);
+    }
+    assert.deepEqual(clampBlock({x_min: 0, x_max: 100, y_min: -700, y_max: -300}, y0), {x_min: 0, x_max: 100, y_min: -500, y_max: -300});
+    assert.throws(() => worldToGrid({x_min: 0, x_max: 100, y_min: 500, y_max: 600}, y0), /y -500\.\.500/);
+    // The converter takes the mounting from the sensor's state, so a rectangle sent behind the sensor is stored there.
+    let mask = Buffer.alloc(40);
+    const endpoint = {read: async () => ({19: Buffer.from(mask)}), write: async (cluster, payload) => {mask = Buffer.from(payload[19].value);}};
+    const meta = {device: {ieeeAddr: 'ceiling-test', getEndpoint: () => endpoint}, state: {installation_mode: 'ceiling'}};
+    await control('interference_zone_add').convertSet(null, 'interference_zone_add', JSON.stringify({x_min: -100, x_max: 0, y_min: -200, y_max: -100}), meta);
+    const bits = []; for (let b = 0; b < 320; b++) if (mask[b >> 3] & (0x80 >> (b % 8))) bits.push(b);
+    assert.deepEqual(bits, [6 * 16 + 8, 6 * 16 + 9, 7 * 16 + 8, 7 * 16 + 9]);
 });
