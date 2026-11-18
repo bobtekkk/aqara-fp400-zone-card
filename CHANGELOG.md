@@ -7,6 +7,8 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-18
+
 ### Fixed
 
 - **Sensor on the ceiling:** ignore spots, doorways and outside-room areas are drawn and painted where the sensor uses them. On the ceiling the sensor's area grid is centred on it, from 5 m behind to 5 m ahead, so these areas can go behind it too. They used to be drawn 5 m too far ahead, and since 0.6.3 some were not drawn at all. Thanks to [@markomartinec7-stack](https://github.com/markomartinec7-stack) for measuring it ([#19](https://github.com/bobtekkk/aqara-fp400-zone-card/issues/19)).
@@ -142,7 +144,8 @@ Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.0...v0.6.1
