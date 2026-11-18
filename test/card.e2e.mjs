@@ -551,6 +551,24 @@ const scenarios = {
         check('RG7 and the same cells are drawn from the sensor forwards, where a wall sensor uses them', JSON.stringify(await cellBox(page, 'interference')) === '[-100,0,300,400]', await cellBox(page, 'interference'));
         noErrors('RG8', page); await page.close();
     },
+    async RH() { // issue #16 follow-up: a ceiling sensor on a turned map paints both in front of and behind itself
+        const page = await open('?rotation=90&latency=100');
+        await btn(page, 'settings').first().click();
+        await setting(page, 'installation_mode').selectOption('ceiling'); await waitMessage(page, /Saved: Mounted on/);
+        await page.locator('fp400-zone-card #settings [data-action="settings"]').click();
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card').limits.y_min === -600);
+        await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); c.view = {x: -600, y: -600, width: 1200, height: 1200}; c.render(); });
+        await btn(page, 'areas').click();
+        await drag(page, [-300, -200], [300, -100]);
+        const preview = await page.evaluate(() => [...document.querySelector('fp400-zone-card').draftBits('interference')]), rows = preview.map(b => b >> 4);
+        check('RH1 a strip across the turned map fills cells on both sides of the sensor', Math.min(...rows) < 10 && Math.max(...rows) >= 10, rows);
+        await btn(page, 'save').click(); await waitIdle(page);
+        const x = await sim(page);
+        check('RH2 the sensor stores exactly the cells the map showed', sameBits(maskSet(x.mask), new Set(preview)), {preview, mask: [...maskSet(x.mask)]});
+        const drawn = await page.evaluate(() => document.querySelector('fp400-zone-card').shadowRoot.querySelectorAll('#areas rect.area-cell[data-type="interference"]:not(.gone)').length);
+        check('RH3 and draws every one of them', drawn === preview.length, {drawn, cells: preview.length});
+        noErrors('RH4', page); await page.close();
+    },
     async RC() { // issue #2: the card still names a sensor that was renamed
         const page = await open('?device=old_name');
         const r = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {device: c.device, zones: Object.values(c.drafts).filter(Boolean).length, message: c.shadowRoot.querySelector('#message').textContent}; });
