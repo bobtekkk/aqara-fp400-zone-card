@@ -12,6 +12,7 @@ Draw presence zones, doorways and "ghost" spots for the **Aqara FP400** spatial 
 - **Up to 8 software zones.** Draw rectangles on a live map; each one becomes its own occupancy sensor in Home Assistant, named after the zone (a zone called "Desk" gives you "Desk occupancy").
 - **Native sensor zones.** Enable `native_zones` in Zigbee2MQTT's device options, then switch to **Native** to paint the FP400's own detection zones as 0.5 m cells. Their occupancy and people counts come from the sensor, independently of coordinate tracking.
 - **People count and movement per software zone.** Each software zone also tells you how many people are in it and whether they are moving or still, and fires enter/leave events.
+- **What each dot is.** The map shows whether the sensor thinks a dot is a person, a pet, a robot vacuum or an object, and your zones can count only people.
 - **Areas, like in the Aqara app.** Paint and erase the sensor's own areas: **ignore spots** (fake targets from a curtain, fan or TV), **doorways** (where people come and go) and **outside room** (behind a wall or a window).
 - **Ghost targets.** Click a dot on the map to make the sensor forget it, or to turn its spot into an ignore spot.
 - **Sensor settings.** Sensitivity, empty delay, approach distance, AI features, mounting and room learning, in one panel.
@@ -147,6 +148,7 @@ payload, including values that Home Assistant has not discovered as entities.
   - **Ignore spot** (red): the sensor ignores movement there. Use it for a fan, a curtain or a TV.
   - **Doorway** (yellow): where people walk in and out; the sensor picks them up and lets them go faster.
   - **Outside room** (grey): behind a wall, a window or in the next room; the sensor stops watching those cells.
+- **Dots**: a filled dot is moving, a ring is still. An amber dot with a word, like "2 · pet", is something the sensor thinks is not a person: a pet, a robot vacuum, a fan, a curtain, a plant or an air purifier. To leave those out of your zones, turn on **Zones count only people** in ⚙ Settings; the card then shows them faded.
 - **A dot you don't trust**: click it. **Forget this target** makes the sensor drop it (a real person comes back within seconds). **Ignore this spot** adds a 1 × 1 m ignore spot around it, for you to save.
 - **⚙ Settings** (top right) changes the sensor's settings. They apply right away.
 - **Sensor in a corner?** In ⚙ Settings, set **Turn the map** (try 45 or -45) until the room looks square. Zones you draw after that follow the room's walls; zones drawn before stay exactly where they were.
@@ -158,7 +160,7 @@ payload, including values that Home Assistant has not discovered as entities.
 
 The card opens in **Software** mode. Native zones are optional: enable **native_zones** in the FP400's Zigbee2MQTT device options first, then select **Native** to edit detection zones computed by the FP400 itself. The option is off by default, so software-only installations do not get the 40 native editor entities. Save or discard current edits before switching modes; switching does not copy or replace your zones.
 
-Draw a new zone, then use **Paint / Erase** to adjust its 0.5 m cells and name it. **Save zones** sends only the changed IDs. A new zone stays **Saving** while its endpoint initializes (at least 20 seconds); it is confirmed by the next poll. Once saved, change **Empty delay** in the zone details or the existing `zone_N_absence_timeout` number entity. This setting applies immediately and is separate from geometry. Each zone retains its exact bitmap, including holes and separate groups of cells. Native zones have their own `native_zone_N_occupancy` and `native_zone_N_count` entities; software entities and enter/leave actions keep their existing meaning.
+Draw a new zone, then use **Paint / Erase** to adjust its 0.5 m cells and name it. **Save zones** sends only the changed IDs. A new zone stays **Saving** while its endpoint initializes (at least 20 seconds); it is confirmed by the next poll. Once saved, change **Empty delay** in the zone details or the existing `zone_N_absence_timeout` number entity. This setting applies immediately and is separate from geometry. Each zone retains its exact bitmap, including holes and separate groups of cells. Tick **Bed zone** to save a zone as a bed: Aqara's notes say firmware 0062 and later watches a bed more closely for someone asleep (not measured yet). If the sensor lists the zone with another type, the zone shows an error saying so. Native zones have their own `native_zone_N_occupancy` and `native_zone_N_count` entities; software entities and enter/leave actions keep their existing meaning.
 
 **Shape unknown** means the card cannot show confirmed geometry for that ID. Select it explicitly and confirm before replacing or deleting it. A free slot is used for a new zone; other sensor zones are left alone. A failed save keeps your open draft for retry and reports the failure instead of saying Saved.
 
@@ -172,7 +174,7 @@ When you save a software zone, Home Assistant gets a sensor named after it: a zo
 |---|---|---|
 | `binary_sensor.<fp400>_software_zone_N_occupancy` | Desk occupancy | Someone is in the zone. When positions pause, it follows the sensor's own presence (see below). |
 | `sensor.<fp400>_software_zone_N_count` | Desk people | How many people are in the zone. |
-| `sensor.<fp400>_software_zone_N_activity` | Desk activity | `moving` or `still`; unknown when the zone is empty. |
+| `sensor.<fp400>_software_zone_N_activity` | Desk activity | `moving` or `still`; unknown when the zone is empty. Someone fidgeting in place counts as moving on sensor firmware 0060 and later. |
 | `binary_sensor.<fp400>_software_zone_N_available` | Desk tracking available | The zone has a known state right now. |
 | `text.<fp400>_software_zone_N_config` | Desk zone configuration | The zone rectangle as JSON (what the card edits). |
 
@@ -196,7 +198,8 @@ The FP400's action entity (`event.<fp400>_action`, plus a device trigger in the 
 - Areas are 0.5 m cells written to the sensor's own memory, like the Aqara app does. Their left/right orientation follows the check against the device made by [RAR/ha-aqara-fp400](https://github.com/RAR/ha-aqara-fp400). If an ignore spot does not hide a ghost, please open an issue.
 - Painting **Outside room** cells replaces the converter's simple `detection_depth` setting (which cuts the room off at one distance); clear them to use it again.
 - The converter re-reads the areas every 5 minutes, so the card also shows changes made elsewhere.
-- Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets all positions and activity values still fit; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
+- Ember (EZSP) coordinators, like the Sonoff ZBDongle-E and Home Assistant SkyConnect, cut the sensor's position reports at 80 bytes when it tracks 3 or more targets ([zigbee-herdsman#1886](https://github.com/Koenkk/zigbee-herdsman/issues/1886)). The converter uses everything that arrives: with 3 targets all positions and movement values still fit; with 4 or more, a missing target is assumed to stay where it was last seen. Z-Stack coordinators are not affected. Ghost targets make this happen more often, so get rid of them (see **A dot you don't trust** above).
+- Sensor firmware 0060 changed how the sensor describes each dot. The converter reads the firmware version by itself, again after an update, so both old and new firmware work. Converters before 0.7.0 leave a zone's activity unknown on firmware 0060 and later.
 - Everything in the settings panel is also a normal Home Assistant entity (select, number, switch, button) on the FP400 device page.
 - The FP400 forgets its areas and mounting when it loses power. The converter keeps those areas, mounting values and scalar settings and puts them back when the sensor comes back; the Zigbee2MQTT log says what it put back. Native zones and their empty delay stay on the sensor through a power cut.
 - The map turn is stored with the sensor (`number.<fp400>_map_rotation`), so every dashboard shows the room the same way. Each zone remembers the turn it was drawn with.

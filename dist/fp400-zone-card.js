@@ -1,5 +1,5 @@
 /* Aqara FP400 zone card for Home Assistant + Zigbee2MQTT. https://github.com/bobtekkk/aqara-fp400-zone-card (MIT License) */
-const VERSION = '0.6.4';
+const VERSION = '0.7.0';
 const COLORS = ['#67e4b8','#9fa9ff','#f9bf73','#f28fad','#68cce8','#d6a0ef','#bddb79','#ff9d7a'];
 const LIMITS = {x_min:-400,x_max:400,y_min:-50,y_max:1000};
 // On the ceiling the sensor also sees behind itself (Aqara: about 5 × 6 m below it at 3 m), so the map goes all around it.
@@ -11,7 +11,10 @@ export const AREAS = {
     entry_exit:{label:'Doorway',color:'#ffd166',hint:'Where people walk in and out. The sensor picks people up and lets them go faster here.'},
     edge:{label:'Outside room',color:'#8fa1ad',hint:'Behind a wall, a window or in the next room. The sensor stops watching these cells.'},
 };
-// Sensor settings, shown when the converter provides them: [domain, key, label, select options or {unit, scale, min, hint}].
+// What the sensor thinks a dot is (converter 0.7+): its word on the map, and how the target panel says it.
+// People keep the plain white dot; anything else is amber.
+const KINDS={person:['person',''],child:['child','a child'],pet:['pet','a pet'],vacuum:['vacuum','a robot vacuum'],fan:['fan','a fan'],curtain:['curtain','a curtain'],plant:['plant','a plant'],air_purifier:['purifier','an air purifier'],not_person:['object','not a person']};
+// Sensor settings, shown when the converter provides them: [domain, key, label, select options or {unit, scale, min, hint}]; a switch may have a hint too.
 // They apply right away, like in the Aqara app.
 const SETTINGS = [
     ['Detection',[
@@ -20,6 +23,7 @@ const SETTINGS = [
         ['select','proximity_distance','Approach distance',{far:'Far',medium:'Medium',near:'Near'}],
         ['select','detection_direction','Movement events',{omnidirectional:'Any direction',left_right:'Left and right'}],
         ['number','forget_still_targets','Forget still dots after',{unit:'min',hint:'0 is off. A dot that has not moved at all for this long is probably a ghost, so the sensor is told to forget it. A real person comes back. People asleep can lie this still for over an hour, so use a long time in a bedroom.'}],
+        ['switch','people_only','Zones count only people',{hint:'Zones ignore dots the sensor marks as a pet, robot vacuum, fan, curtain, plant or air purifier.'}],
     ]],
     ['Smart features',[
         ['switch','ai_high_precision','Better person recognition'],
@@ -79,7 +83,9 @@ export function normalizeNativeZone(value){
     const z={name:value.name,mask_hex:value.mask_hex};
     if(typeof z.name!=='string'||!z.name.trim()||z.name.length>32)throw new Error('Give the zone a name (up to 32 characters).');
     if(typeof z.mask_hex!=='string'||!/^[0-9a-f]{80}$/i.test(z.mask_hex)||!/[1-9a-f]/i.test(z.mask_hex))throw new Error('Paint at least one 0.5 m cell for the native zone.');
-    z.mask_hex=z.mask_hex.toLowerCase();return z;
+    z.mask_hex=z.mask_hex.toLowerCase();
+    if(value.type==='bed')z.type='bed'; // newer firmware watches a bed for someone asleep; no other type exists
+    return z;
 }
 export function maskHex(bits){
     const bytes=new Uint8Array(40);for(const bit of bits)bytes[bit>>3]|=0x80>>(bit%8);
@@ -98,11 +104,19 @@ export function moveRectangle(zone,dx,dy,step=50,box=LIMITS) {
     dy=clamp(snap(dy),Math.min(0,box.y_min-zone.y_min),Math.max(0,box.y_max-zone.y_max));
     return {...zone,x_min:zone.x_min+dx,x_max:zone.x_max+dx,y_min:zone.y_min+dy,y_max:zone.y_max+dy};
 }
-export function parseTargets(value) {
+// Dots from targets_xy ("id:x:y;..."). Converter 0.7+ also sends tracking_targets over MQTT, which says for each dot
+// whether it moves, what the sensor thinks it is, and whether zones ignore it. The rest of it is diagnostics.
+export function parseTargets(value,details) {
     if(!value || value==='none')return [];
+    const known=new Map((Array.isArray(details)?details:[]).map(d=>[d?.id,d]));
     return value.split(';').flatMap(item=>{
         const parts=item.split(':').map(Number);
-        return parts.length===3 && parts.every(Number.isFinite)?[{id:parts[0],x:parts[1],y:parts[2]}]:[];
+        if(parts.length!==3 || !parts.every(Number.isFinite))return [];
+        const t={id:parts[0],x:parts[1],y:parts[2]},d=known.get(t.id);
+        if(typeof d?.moving==='boolean')t.moving=d.moving;
+        if(Object.hasOwn(KINDS,d?.type))t.type=d.type;
+        if(d?.ignored===true)t.ignored=true;
+        return [t];
     });
 }
 // A view (map coordinates) around the given points and the sensor, inside the range of a map turned by deg.
@@ -324,13 +338,14 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
                 let data;
                 try{data=JSON.parse(message.payload);}catch{return;}
                 if(!data||typeof data!=='object'||Array.isArray(data))return;
-                const keys=['targets_xy','tracking_last_update','tracking_status',
+                const keys=['targets_xy','tracking_targets','tracking_last_update','tracking_status',
                     'interference_mask_hex','entry_exit_mask_hex','edge_mask_hex','learning_result_time']
                     .filter(key=>Object.hasOwn(data,key));
                 if(!keys.length)return;
                 const next={...this.liveTracking};let editorChanged=false,positionsChanged=false;
                 for(const key of keys){
-                    if(next[key]===data[key])continue;
+                    // tracking_targets is a new array in every payload, so values are compared as text.
+                    if(JSON.stringify(next[key])===JSON.stringify(data[key]))continue;
                     next[key]=data[key];
                     if(key.endsWith('_mask_hex')||key==='learning_result_time')editorChanged=true;
                     else positionsChanged=true;
@@ -429,7 +444,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         if(this.panel==='settings'&&!this.inside('#settings'))this.renderSettings();
         this.renderMap();this.renderLive();this.renderButtons();
     }
-    targets(){return parseTargets(this.trackingValue('targets_xy'));}
+    targets(){return parseTargets(this.trackingValue('targets_xy'),this.liveTracking?.tracking_targets);}
     fresh(){const time=Date.parse(this.trackingValue('tracking_last_update'));return ['valid','partial'].includes(this.trackingValue('tracking_status')) && Number.isFinite(time) && Date.now()-time<30000;}
     // A zone shows a state whenever the converter has one (fresh positions, or held by the sensor's own presence).
     zoneLive(id){return this.native?this.nativeStatus(id)==='ready'&&['on','off'].includes(this.state('binary_sensor',this.zoneKey(id,'occupancy'))):this.state('binary_sensor',`software_zone_${id}_available`)==='on';}
@@ -531,7 +546,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             const original=d.original&&d.original!=='unmanaged'?d.original:null;
             const bits=new Set(original?maskBits(original.mask_hex):[]);
             if(rect)for(const bit of opBits({rect,rotation:this.rotation},this.gridY0))d.tool==='remove'?bits.delete(bit):bits.add(bit);
-            if(bits.size)this.mark(d.id,{name:original?.name??`Zone ${d.id}`,mask_hex:maskHex(bits)});
+            if(bits.size)this.mark(d.id,{name:`Zone ${d.id}`,...original,mask_hex:maskHex(bits)}); // a bed stays a bed
             else this.mark(d.id,d.original);
             d.empty=Boolean(original)&&!bits.size;
             this.renderMap();this.renderButtons();return;
@@ -614,6 +629,7 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             if(this.native){
                 if(z==='unmanaged'||!this.nativeEditable(id))return;
                 if(field==='name')z.name=event.target.value;
+                if(field==='bed'){delete z.type;if(event.target.checked)z.type='bed';}
                 normalizeNativeZone(z);this.mark(id,z);this.render();return;
             }
             if(field==='name')z.name=event.target.value;
@@ -695,7 +711,12 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
             :'No position reports from the sensor in the last 30 seconds. Check that the FP400 is online in Zigbee2MQTT. If this lasts, set Mounted on and Wall position in Settings.');
         const scale=this.view.width/700,seen=targets.find(t=>t.id===this.target);
         if(seen)this.targetAt={x:seen.x,y:seen.y};
-        let html=targets.map(t=>{const sel=t.id===this.target,v=turn(t,-this.rotation);return `<g class="target" data-target="${t.id}"><circle class="hit" cx="${v.x}" cy="${-v.y}" r="${15*scale}" fill="${sel?'#ff6b7830':'#ffffff12'}"${sel?' stroke="#ff9aa5" stroke-width="1.5" vector-effect="non-scaling-stroke"':''}/><circle cx="${v.x}" cy="${-v.y}" r="${6*scale}" fill="#f6fbff" stroke="#142731" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="${v.x+11*scale}" y="${-v.y-11*scale}" fill="#fff" font-size="${10*scale}">${t.id+1}</text></g>`;}).join('');
+        // A still dot is a ring, what is not a person is amber and named, and a dot that zones ignore fades.
+        let html=targets.map(t=>{
+            const sel=t.id===this.target,v=turn(t,-this.rotation),kind=KINDS[t.type],thing=kind&&!['person','child'].includes(t.type),color=thing?'#ffb74d':'#f6fbff',still=t.moving===false;
+            const about=[...(t.moving===undefined?[]:[still?'still':'moving']),...(kind?[kind[0]]:[]),...(t.ignored?['zones ignore it']:[])];
+            return `<g class="target" data-target="${t.id}"${t.ignored?' opacity=".45"':''}>${about.length?`<title>Dot ${t.id+1} · ${about.join(' · ')}</title>`:''}<circle class="hit" cx="${v.x}" cy="${-v.y}" r="${15*scale}" fill="${sel?'#ff6b7830':'#ffffff12'}"${sel?' stroke="#ff9aa5" stroke-width="1.5" vector-effect="non-scaling-stroke"':''}/><circle cx="${v.x}" cy="${-v.y}" r="${6*scale}" fill="${still?'#101d27':color}" stroke="${still?color:'#142731'}" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="${v.x+11*scale}" y="${-v.y-11*scale}" fill="${thing?color:'#fff'}" font-size="${10*scale}">${t.id+1}${thing?` · ${kind[0]}`:''}</text></g>`;
+        }).join('');
         // Where the selected target was last seen, so a flickering ghost can still be dealt with.
         if(this.target!==null&&!seen&&this.targetAt){const a=turn(this.targetAt,-this.rotation);html+=`<g class="target lost"><circle cx="${a.x}" cy="${-a.y}" r="${15*scale}" fill="none" stroke="#ff9aa5" stroke-width="1.2" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/><text x="${a.x+11*scale}" y="${-a.y-11*scale}" fill="#ff9aa5" font-size="${10*scale}">${this.target+1}</text></g>`;}
         setHtml(this.shadowRoot.querySelector('#targets'),html);
@@ -747,9 +768,10 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         const input=(label,key,value,type='number',extra='')=>`<label class="field">${label}<input data-field="${key}" data-for="${id}" type="${type}" value="${escapeHTML(value)}" ${extra} ${off}/></label>`;
         const error=this.state('sensor',`native_zone_${id}_error`);
         const timeoutId=this.entity('number',`zone_${id}_absence_timeout`),timeout=this._hass?.states?.[timeoutId],ready=this.nativeTimeoutReady(id);
+        // Bed zones need converter 0.7+ (older ones drop the type, so Save would never be confirmed); people_only came with it.
         const timeoutField=`<label class="field">Empty delay · seconds<input data-setting="${timeoutId}" data-native-timeout="${id}" type="number" min="0" max="${timeout?.attributes?.max??300}" step="1" value="${ready?escapeHTML(timeout.state):''}" ${ready&&!this.busy[timeoutId]?'':'disabled'}/></label><p class="small-note">${ready?'Applies immediately to this sensor zone.':'Available after this zone is saved and the sensor is ready.'}</p>`;
         setHtml(el,`<h2 class="section-title">SENSOR ZONE ${id?`<span class="count-pill">${id}</span>`:''}</h2>`+
-            (z?`${unknown?'<p class="small-note">The sensor geometry for this slot is not confirmed. Paint a replacement only if you intend to write this slot.</p>':`${input('Name','name',z.name,'text','maxlength="32"')}${timeoutField}<p class="small-note">${maskBits(z.mask_hex).size} cells · 0.5 m grid.</p>`}<div class="segmented"><button class="btn" data-action="native-paint" data-tool="add" ${off}>Paint</button><button class="btn" data-action="native-paint" data-tool="remove" ${unknown?'disabled':off}>Erase</button></div><button class="btn danger" data-action="delete" ${off}>Delete zone</button>`
+            (z?`${unknown?'<p class="small-note">The sensor geometry for this slot is not confirmed. Paint a replacement only if you intend to write this slot.</p>':`${input('Name','name',z.name,'text','maxlength="32"')}${this.state('switch','people_only')===undefined?'':`<p class="small-note"><label><input type="checkbox" data-field="bed" data-for="${id}" ${z.type==='bed'?'checked':''} ${off}/> Bed zone</label><br>Newer sensor firmware (0062 and later) watches a bed more closely for someone asleep.</p>`}${timeoutField}<p class="small-note">${maskBits(z.mask_hex).size} cells · 0.5 m grid.</p>`}<div class="segmented"><button class="btn" data-action="native-paint" data-tool="add" ${off}>Paint</button><button class="btn" data-action="native-paint" data-tool="remove" ${unknown?'disabled':off}>Erase</button></div><button class="btn danger" data-action="delete" ${off}>Delete zone</button>`
             :`<p class="small-note">${id&&this.dirty.has(id)?'This zone will be removed when you save.':'Draw a sensor zone, or select one to paint or erase 0.5 m cells. Software zones stay separate.'}</p>`)+
             (overwrite?`<label class="small-note"><input type="checkbox" data-overwrite="${id}" ${this.overwriteNative.has(id)?'checked':''} ${this.saving?'disabled':''}/> I confirm writing or deleting sensor zone ${id}.</label>`:'')+
             (this.nativeStatus(id)==='error'&&error?`<p class="message error">${escapeHTML(error)}</p>`:'')+this.areasSummary());
@@ -771,8 +793,10 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
         return `<div class="area-panel"><h2 class="section-title">AREAS</h2>${chips?`<div class="area-chips">${chips}</div>`:''}<p class="small-note">${chips?'':'None yet. '}Use <b>Areas</b> to mark fake-target spots, doorways and space outside the room.</p></div>`;
     }
     targetPanel(){
-        const id=this.target,seen=this.fresh()&&this.targets().some(t=>t.id===id),off=this.saving?'disabled':'';
-        return `<h2 class="section-title">TARGET <span class="count-pill">${id+1}</span></h2><p class="small-note">${seen?'The sensor sees something here right now.':'The sensor does not see this target right now.'} Not a person? Make the sensor forget it. If it keeps coming back in the same spot, ignore that spot.</p><button class="btn" data-action="forget-target" ${this.forgetting!==null||!this.available('text','remove_target')?'disabled':off}>${this.forgetting!==null?'Forgetting…':'Forget this target'}</button><button class="btn" data-action="ignore-target" ${this.targetAt&&this.areaReady('interference')?off:'disabled'}>Ignore this spot</button><button class="btn subtle" data-action="close-target">Done</button>`;
+        const id=this.target,seen=this.fresh()?this.targets().find(t=>t.id===id):undefined,off=this.saving?'disabled':'';
+        // What the sensor knows about the dot (converter 0.7+), in plain words.
+        const about=seen?[seen.moving===undefined?'':seen.moving?'Moving right now.':'Still right now.',KINDS[seen.type]?.[1]?`The sensor thinks this is ${KINDS[seen.type][1]}.`:'',seen.ignored?'Zones ignore it.':''].filter(Boolean).join(' '):'';
+        return `<h2 class="section-title">TARGET <span class="count-pill">${id+1}</span></h2><p class="small-note">${seen?'The sensor sees something here right now.':'The sensor does not see this target right now.'}${about?` ${about}`:''} Not a person? Make the sensor forget it. If it keeps coming back in the same spot, ignore that spot.</p><button class="btn" data-action="forget-target" ${this.forgetting!==null||!this.available('text','remove_target')?'disabled':off}>${this.forgetting!==null?'Forgetting…':'Forget this target'}</button><button class="btn" data-action="ignore-target" ${this.targetAt&&this.areaReady('interference')?off:'disabled'}>Ignore this spot</button><button class="btn subtle" data-action="close-target">Done</button>`;
     }
     renderSettings(){
         if(!this.mounted||this.panel!=='settings')return;
@@ -784,14 +808,14 @@ export class FP400ZoneCard extends (globalThis.HTMLElement ?? class {}) {
     }
     settingRow(domain,key,label,extra){
         const id=this.entity(domain,key),s=this._hass?.states?.[id];if(!s)return '';
-        const attrs=`data-setting="${id}" aria-label="${label}" ${s.state==='unavailable'||this.busy[id]?'disabled':''}`;
-        if(domain==='switch')return `<label class="setting toggle"><span>${label}</span><input type="checkbox" role="switch" ${attrs} ${s.state==='on'?'checked':''}></label>`;
+        const attrs=`data-setting="${id}" aria-label="${label}" ${s.state==='unavailable'||this.busy[id]?'disabled':''}`,tip=extra?.hint?` title="${escapeHTML(extra.hint)}"`:'';
+        if(domain==='switch')return `<label class="setting toggle"${tip}><span>${label}</span><input type="checkbox" role="switch" ${attrs} ${s.state==='on'?'checked':''}></label>`;
         if(domain==='select'){
             const values=(s.attributes?.options??Object.keys(extra)).filter(v=>v in extra);
             return `<label class="setting"><span>${label}</span><select ${attrs}>${values.includes(s.state)?'':'<option value="" selected disabled>Not set</option>'}${values.map(v=>`<option value="${v}" ${v===s.state?'selected':''}>${extra[v]}</option>`).join('')}</select></label>`;
         }
-        const value=Number(s.state),a=s.attributes??{},{unit,scale=1,min=a.min??0,hint}=extra;
-        return `<label class="setting"${hint?` title="${escapeHTML(hint)}"`:''}><span>${label} · ${unit}</span><input type="number" ${attrs} min="${min/scale}" max="${(a.max??65535)/scale}" step="1" value="${s.state!==''&&Number.isFinite(value)?value/scale:''}"></label>`;
+        const value=Number(s.state),a=s.attributes??{},{unit,scale=1,min=a.min??0}=extra;
+        return `<label class="setting"${tip}><span>${label} · ${unit}</span><input type="number" ${attrs} min="${min/scale}" max="${(a.max??65535)/scale}" step="1" value="${s.state!==''&&Number.isFinite(value)?value/scale:''}"></label>`;
     }
     // Settings apply at once and count as done only when the sensor's reported state matches.
     async applySetting(input,descriptor){

@@ -374,3 +374,43 @@ test('a removal is confirmed once the sensor stops listing the zone a moment lat
     assert.deepEqual([...device.zones.keys()], [1]);
     await stop(device);
 });
+
+test('a bed zone is written with Aqara\'s bed type, kept in the state, and checked against the sensor\'s zone list', async t => {
+    let now = 1e12; t.mock.method(Date, 'now', () => now);
+    const device = sensor(), types = new Map(), ep = device.getEndpoint(1), read = ep.read, command = ep.command;
+    // The sensor's zone list (FC0A attribute 16) with the type each zone was written with, unless it drops the type.
+    ep.command = async (cluster, name, args, options) => {
+        if (args.zone) types.set(args.zone[0].elmVal, device.keepType === false ? 0 : args.zone[1].elmVal);
+        return command(cluster, name, args, options);
+    };
+    ep.read = async (cluster, attrs) => {
+        if (cluster !== 'aqaraFp400Config' || attrs[0] !== 16) return read(cluster, attrs);
+        if (device.listUnreadable) throw new RangeError('The value of "offset" is out of range');
+        return {16: device.listEmpty ? [] : [...device.zones.keys()].map(id => [{elmType: 0x20, elmVal: id}, {elmType: 0x30, elmVal: types.get(id)}, {elmType: 0x41, elmVal: Buffer.alloc(40)}, {elmType: 0x10, elmVal: 1}])};
+    };
+    await start(device);
+    const bed = {...config, name: 'Bed', type: 'bed'};
+    await set(device, bed);
+    const sent = device.commands[0];
+    assert.equal(Zcl.Frame.create(1, 0, sent.options.disableDefaultResponse, sent.options.manufacturerCode, 0x5c, sent.name, sent.cluster, sent.args, device.customClusters).toBuffer().toString('hex'),
+        '055f115c040400200130364128000000000000010001000100000000000000000000000000000000000000000000000000000000001001', 'enum8 0x36: BedroomBed');
+    now += 20000; await fp400Poll(device);
+    assert.deepEqual(JSON.parse(nativeZoneState(device).native_zone_1_config), bed);
+    assert.equal(nativeZoneState(device).native_zone_1_status, 'ready');
+    await set(device, config);
+    assert.equal(device.commands[1].args.zone[1].elmVal, 0, 'an ordinary zone again');
+    assert.deepEqual(JSON.parse(nativeZoneState(device).native_zone_1_config), config);
+    device.keepType = false;
+    await assert.rejects(set(device, bed), /not as a bed zone/);
+    assert.equal(nativeZoneState(device).native_zone_1_status, 'error');
+    // An Ember coordinator cuts the zone list once the sensor has two zones, and the reply no longer parses.
+    device.keepType = true; device.listUnreadable = true;
+    await set(device, bed);
+    assert.deepEqual([JSON.parse(nativeZoneState(device).native_zone_1_config), nativeZoneState(device).native_zone_1_status], [bed, 'ready'], 'an unreadable list leaves the type unchecked');
+    device.listUnreadable = false; device.keepType = false; device.listEmpty = true;
+    await set(device, bed);
+    assert.equal(nativeZoneState(device).native_zone_1_status, 'ready', 'so does a list without this zone');
+    assert.throws(() => parseNativeZone({...config, type: 'sofa'}), /type must be bed/);
+    assert.deepEqual(parseNativeZone(JSON.stringify(bed)).config, bed);
+    await stop(device);
+});
