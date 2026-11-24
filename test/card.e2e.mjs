@@ -569,6 +569,43 @@ const scenarios = {
         check('RH3 and draws every one of them', drawn === preview.length, {drawn, cells: preview.length});
         noErrors('RH4', page); await page.close();
     },
+    async RI() { // converter 0.7 over MQTT: whether each dot moves, what the sensor thinks it is, and People only
+        const page = await open('?mqtt=1&latency=100&tick=1000');
+        const dots = () => page.evaluate(() => Object.fromEntries([...document.querySelector('fp400-zone-card').shadowRoot.querySelectorAll('#targets .target[data-target]')].map(g => {
+            const dot = g.querySelectorAll('circle')[1];
+            return [g.dataset.target, {fill: dot.getAttribute('fill'), stroke: dot.getAttribute('stroke'), label: g.querySelector('text').textContent, title: g.querySelector('title')?.textContent ?? null, opacity: g.getAttribute('opacity')}];
+        })));
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card').shadowRoot.querySelectorAll('#targets .target[data-target]').length === 2);
+        let d = await dots();
+        const source = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {topics: window.__sim.topics, entity: 'sensor.0x54ef440000000001_targets_xy' in c._hass.states, live: c.shadowRoot.querySelector('#live').textContent.trim()}; });
+        check('RI1 an admin gets the dots over MQTT while HA\'s tracking entities are off', JSON.stringify(source.topics) === '["zigbee2mqtt/0x54ef440000000001"]' && !source.entity && source.live === 'Live · 2 targets', source);
+        check('RI2 the pet lying still is an amber ring named pet', d[4]?.fill === '#101d27' && d[4]?.stroke === '#ffb74d' && d[4]?.label === '5 · pet' && d[4]?.title === 'Dot 5 · still · pet' && d[4]?.opacity === null, d);
+        check('RI3 the person moving at the desk is a filled white dot with just its number', d[1]?.fill === '#f6fbff' && d[1]?.label === '2' && d[1]?.title === 'Dot 2 · moving · person' && d[1]?.opacity === null, d);
+        await clickAt(page, -160, 260);
+        let s = await st(page);
+        check('RI4 the pet\'s panel says it is still and what the sensor thinks it is', s.target === 4 && /The sensor sees something here right now\. Still right now\. The sensor thinks this is a pet\. Not a person\?/.test(s.inspector) && /Forget this target/.test(s.inspector), s.inspector);
+        await btn(page, 'settings').first().click();
+        const rows = await page.evaluate(() => [...document.querySelector('fp400-zone-card').shadowRoot.querySelectorAll('#settings .setting')].map(r => [r.querySelector('span').textContent, r.title]));
+        const at = rows.findIndex(([label]) => label === 'Zones count only people');
+        check('RI5 People only comes after Forget still dots after, with its hint', at > 0 && rows[at - 1][0] === 'Forget still dots after · min' && /pet, robot vacuum, fan, curtain, plant or air purifier/.test(rows[at][1]), rows);
+        await setting(page, 'people_only').click();
+        await waitMessage(page, /Saved: Zones count only people/);
+        const call = (await calls(page)).at(-1);
+        check('RI6 the switch turns People only on', call.domain === 'switch' && call.service === 'turn_on' && call.entity_id === 'switch.people_only', call);
+        await page.waitForFunction(() => document.querySelector('fp400-zone-card').shadowRoot.querySelector('#targets .target[data-target="4"]')?.getAttribute('opacity') === '.45', null, {timeout: 5000}).catch(() => {});
+        d = await dots();
+        check('RI7 then the pet fades and the person does not', d[4]?.opacity === '.45' && d[4]?.title === 'Dot 5 · still · pet · zones ignore it' && d[1]?.opacity === null, d);
+        await page.locator('fp400-zone-card #settings [data-action="settings"]').click();
+        s = await st(page);
+        check('RI8 and the pet\'s panel says zones ignore it', s.target === 4 && /The sensor thinks this is a pet\. Zones ignore it\. Not a person\?/.test(s.inspector), s.inspector);
+        await clickAt(page, -25, 82);
+        s = await st(page);
+        check('RI9 a person\'s panel only says that they move', s.target === 1 && /right now\. Moving right now\. Not a person\?/.test(s.inspector) && !/thinks this is|ignore it\./.test(s.inspector), s.inspector);
+        await page.evaluate(() => { window.__sim.targets[1].moving = true; window.__sim.sendTargets(); });
+        d = await dots();
+        check('RI10 a pet that starts moving in the same place is filled again', d[4]?.fill === '#ffb74d' && d[4]?.title === 'Dot 5 · moving · pet · zones ignore it', d);
+        noErrors('RI11', page); await page.close();
+    },
     async RC() { // issue #2: the card still names a sensor that was renamed
         const page = await open('?device=old_name');
         const r = await page.evaluate(() => { const c = document.querySelector('fp400-zone-card'); return {device: c.device, zones: Object.values(c.drafts).filter(Boolean).length, message: c.shadowRoot.querySelector('#message').textContent}; });
@@ -701,6 +738,38 @@ const scenarios = {
         await btn(page,'discard').click();await btn(page,'zone-mode').click();
         check('NO7 discard permits returning to software zones',await btn(page,'zone-mode').textContent()==='Software zones'&&await page.locator('fp400-zone-card .zone-row[data-zone="1"] strong').textContent()==='Desk');
         noErrors('NO8',page);await page.close();
+    },
+    async NB() { // a sensor zone marked as a bed is saved with type bed and stays a bed
+        const page=await open('?native=1&latency=100');await nativeMode(page);
+        await page.locator('fp400-zone-card .zone-row[data-zone="1"]').click();
+        const bed=page.locator('fp400-zone-card input[data-field="bed"]'),row=page.locator('fp400-zone-card .zone-row[data-zone="1"] small');
+        const sent=async()=>{const call=await page.evaluate(()=>window.__sim.calls.at(-1));return {raw:call.value,...JSON.parse(call.value)};};
+        let s=await st(page);
+        check('NB1 Bed zone starts unticked and says what it does',!(await bed.isChecked())&&!(await bed.isDisabled())&&/Bed zone/.test(s.inspector)&&/Newer sensor firmware \(0062 and later\) watches a bed more closely for someone asleep\./.test(s.inspector),s.inspector);
+        await bed.click();
+        check('NB2 ticking it is an unsaved change',await bed.isChecked()&&await row.textContent()==='Unsaved changes'&&!(await btn(page,'save').isDisabled()));
+        await bed.click();
+        check('NB3 unticking it again leaves nothing to save',!(await bed.isChecked())&&await btn(page,'save').isDisabled()&&await row.textContent()!=='Unsaved changes');
+        await bed.click();await btn(page,'save').click();await waitIdle(page);
+        let value=await sent();
+        check('NB4 Save sends "type":"bed" with the same name and cells',value.raw.includes('"type":"bed"')&&value.name==='Sensor desk'&&maskSet(value.mask_hex).size===8,value);
+        const back=await page.evaluate(()=>{const c=document.querySelector('fp400-zone-card');return {state:c._hass.states['text.0x54ef440000000001_native_zone_1_config'].state,saved:c.saved[1],dirty:c.dirty.size};});
+        s=await st(page);
+        check('NB5 it reads back as a bed: nothing unsaved and the box stays ticked',JSON.parse(back.state).type==='bed'&&back.saved.type==='bed'&&back.dirty===0&&await bed.isChecked()&&await row.textContent()!=='Unsaved changes'&&/^Saved/.test(s.message),{back,message:s.message});
+        await page.locator('fp400-zone-card [data-action="native-paint"][data-tool="add"]').click();
+        await drag(page,[-100,200],[-50,250]);
+        check('NB6 painting another cell keeps it a bed',await bed.isChecked()&&await page.evaluate(()=>document.querySelector('fp400-zone-card').drafts[1].type)==='bed');
+        await btn(page,'save').click();await waitIdle(page);
+        value=await sent();
+        check('NB7 and saves the new cell as a bed',value.type==='bed'&&maskSet(value.mask_hex).size===9,value);
+        await bed.click();await btn(page,'save').click();await waitIdle(page);
+        value=await sent();
+        check('NB8 unticking saves an ordinary zone (no type) that stays unticked',!('type' in value)&&!(await bed.isChecked())&&await page.evaluate(()=>document.querySelector('fp400-zone-card').dirty.size)===0,value);
+        noErrors('NB9',page);await page.close();
+        const old=await open('?native=1&nosettings&latency=100');await nativeMode(old);
+        await old.locator('fp400-zone-card .zone-row[data-zone="1"]').click();
+        check('NB10 a converter without people_only (before 0.7) gets no Bed zone box, since it would drop the type',await old.locator('fp400-zone-card input[data-field="bed"]').count()===0&&await old.locator('fp400-zone-card input[data-field="name"]').count()===1);
+        noErrors('NB11',old);await old.close();
     },
 };
 

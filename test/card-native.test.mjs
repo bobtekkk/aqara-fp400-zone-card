@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {FP400ZoneCard,normalizeNativeZone,maskHex,maskBits} from '../dist/fp400-zone-card.js';
+import {FP400ZoneCard,normalizeNativeZone,maskHex,maskBits,mapLimits} from '../dist/fp400-zone-card.js';
 const zone={name:'Desk',mask_hex:maskHex(new Set([0,1,2,16,18,32,33,34]))};
 function editor(){
     const c=Object.create(FP400ZoneCard.prototype);Object.assign(c,{zoneMode:'native',config:{device:'fp'},saved:{1:zone,2:'unmanaged',3:null},drafts:{1:{...zone,name:'Office'},2:'unmanaged',3:null},base:{1:zone},dirty:new Set([1]),loaded:new Set([1,2,3]),selected:1,saving:false,busy:{},pendingAreas:[],pendingClears:new Set(),overwriteNative:new Set(),render(){},notice(text){this.message=text;}});
@@ -116,6 +116,29 @@ test('native timeout cannot write a new or pending zone before numeric state is 
     publish(c,3,'unmanaged','pending');c._hass.states['number.fp_zone_3_absence_timeout'].state='10';
     await c.applySetting(input,descriptor);assert.equal(calls,0);
     publish(c,3,zone);assert.equal(c.nativeTimeoutReady(3),true);
+});
+test('a bed zone reads back as a bed; no other zone type exists',()=>{
+    assert.deepEqual(normalizeNativeZone(JSON.stringify({...zone,type:'bed'})),{...zone,type:'bed'});
+    for(const type of ['sofa','BED','',null,1])assert.deepEqual(normalizeNativeZone({...zone,type}),zone);
+});
+test('ticking Bed zone is an unsaved edit that Save sends as type bed, within the 255-character limit',async()=>{
+    const c=syncable(editor()),sent=[],tick=checked=>c.editField({target:{dataset:{field:'bed',for:'1'},checked}});
+    c.dirty.clear();c.base={};c.drafts[1]={...zone};
+    tick(true);assert.equal(c.dirty.has(1),true);assert.equal(c.drafts[1].type,'bed');
+    tick(false);assert.equal(c.dirty.size,0,'unticking again leaves nothing to save');
+    tick(true);c._hass.callService=async(d,s,data)=>{sent.push(data.value);publish(c,1,JSON.parse(data.value));};
+    await c.save();
+    assert.deepEqual(JSON.parse(sent[0]),{name:'Desk',mask_hex:zone.mask_hex,type:'bed'});assert.equal(c.dirty.size,0);assert.equal(c.saved[1].type,'bed');
+    // 244 characters as an ordinary zone, 257 as a bed.
+    const x=editor();x.drafts[1]={...zone,name:'A'+'\u0000'.repeat(23),type:'bed'};let calls=0;x._hass.callService=async()=>{calls++;};
+    await x.save();assert.equal(calls,0);assert.match(x.message,/255-character/);
+});
+test('painting cells keeps a bed zone a bed',()=>{
+    const c=syncable(editor());c.dirty.clear();c.base={};c.saved[1]={...zone,type:'bed'};c.drafts[1]={...zone,type:'bed'};
+    Object.assign(c,{rotation:0,limits:mapLimits('wall'),gridY0:0,point:()=>({x:-100,y:300})});
+    c.drag={kind:'native-paint',id:1,start:{x:-150,y:250},original:{...zone,type:'bed'},tool:'add',pointer:1};
+    c.pointerMove({pointerId:1});
+    assert.equal(c.drafts[1].type,'bed');assert.equal(maskBits(c.drafts[1].mask_hex).size,9);assert.equal(c.dirty.has(1),true);
 });
 test('missing optional native controls keep software mode and retain existing native drafts',()=>{
     const c=syncable(editor());c.zoneMode='software';c.dirty.clear();

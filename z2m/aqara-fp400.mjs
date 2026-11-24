@@ -646,6 +646,9 @@ function nativeRequest(meta) {
     context.enabled = true; context.publish = meta.publish;
     return context;
 }
+// Zone types from Aqara's ZoneTypeEnum. Firmware 0062 watches a bed zone more closely for someone asleep (its Matter
+// twin's notes; not confirmed on Zigbee). Every other zone is written as "other".
+const zoneTypes = {other: 0, bed: 0x36};
 export function parseNativeZone(value) {
     if (typeof value === 'string' && value.length > 255) throw new Error('Native zone JSON must fit 255 characters');
     const input = value === 'clear' ? {clear: true} : typeof value === 'string' ? JSON.parse(value) : value;
@@ -656,7 +659,8 @@ export function parseNativeZone(value) {
     if (input.clear === true) return {config: null, overwrite: input.overwrite === true};
     if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 32) throw new Error('Zone name must be 1..32 characters and not blank');
     if (typeof input.mask_hex !== 'string' || !/^[0-9a-f]{80}$/i.test(input.mask_hex) || !/[^0]/.test(input.mask_hex)) throw new Error('Native mask must contain 80 hex characters and at least one selected cell');
-    const config = {name: input.name, mask_hex: input.mask_hex.toLowerCase()};
+    if (input.type !== undefined && input.type !== 'bed') throw new Error('Native zone type must be bed, or left out for an ordinary zone');
+    const config = {name: input.name, mask_hex: input.mask_hex.toLowerCase(), ...(input.type === 'bed' ? {type: 'bed'} : {})};
     if (JSON.stringify({...config, ...(input.overwrite ? {overwrite: true} : {})}).length > 255) throw new Error('Native zone JSON must fit 255 characters');
     return {config, overwrite: input.overwrite === true};
 }
@@ -687,7 +691,7 @@ export function nativeZoneState(device) {
         const key = `native_zone_${id}`, record = device.meta?.fp400NativeZones?.[id];
         const known = context.endpoints !== null, exists = context.endpoints?.has(id);
         const confirmed = record?.status === 'ready' && known && exists === (record.config !== null);
-        const config = record?.config ? {name: record.config.name, mask_hex: record.config.mask_hex} : null;
+        const config = record?.config ? {name: record.config.name, mask_hex: record.config.mask_hex, ...(record.config.type ? {type: record.config.type} : {})} : null;
         state[`${key}_config`] = confirmed ? config === null ? 'clear' : JSON.stringify(config) : known && !exists && !record ? 'clear' : 'unmanaged';
         state[`${key}_status`] = record?.status === 'pending' ? 'pending' : record?.status === 'error' || (!known && context.error) ? 'error' : 'ready';
         state[`${key}_error`] = (record?.error || (!known && context.error) || '').slice(0, 255);
@@ -742,6 +746,14 @@ async function finishNativeZone(device, id, endpoints) {
     const endpoint = endpoints.get(id), extra = {};
     if (record.config) {
         if (endpoint === undefined) throw new Error('Native zone has no endpoint after the command');
+        // Firmware that does not know a zone type can keep the zone as an ordinary one. With two zones or more the list
+        // no longer fits the 80 bytes an Ember coordinator passes on (zigbee-herdsman#1886); then the type stays unchecked.
+        if (record.config.type) {
+            let zones;
+            try {zones = (await device.getEndpoint(1).read(configCluster, [16], manufacturerOptions))[16];} catch {/* unchecked */}
+            const type = nativeZoneType(zones, id);
+            if (type !== undefined && type !== zoneTypes[record.config.type]) throw new Error(`The sensor kept this zone, but not as a ${record.config.type} zone. Its firmware may not support that.`);
+        }
         const key = `zone_${id}_absence_timeout`;
         const saved = Object.values(device.meta.fp400Saved ?? {}).find(setting => setting.name === key);
         if (record.settleUntil !== undefined && saved) Object.assign(extra, await writeZoneSetting(device, id, device.getEndpoint(endpoint), key, saved.value));
@@ -795,7 +807,7 @@ const fp400NativeControl = {
                 meta.publish(nativeZoneState(device));
                 if (config || endpoint !== undefined) {
                     const command = config ? append ? 'appendZone' : 'updateZone' : 'removeZone';
-                    const args = config ? {zone: [{elmType: 0x20, elmVal: id}, {elmType: 0x30, elmVal: 0},
+                    const args = config ? {zone: [{elmType: 0x20, elmVal: id}, {elmType: 0x30, elmVal: zoneTypes[config.type ?? 'other']},
                         {elmType: 0x41, elmVal: Buffer.from(config.mask_hex, 'hex')}, {elmType: 0x10, elmVal: 1}]} : {zoneId: id};
                     const result = await device.getEndpoint(1).command(configCluster, command, args, {...manufacturerOptions, disableDefaultResponse: false, disableResponse: false});
                     if (result?.errorCode !== 0) throw new Error(`Native ${command} was not acknowledged: ${JSON.stringify(result)}`);
@@ -847,7 +859,7 @@ async function maintainNativeZones(device, refresh = false) {
 }
 const nativeZoneExposes = Array.from({length: 8}, (_, i) => {
     const key = `native_zone_${i + 1}`;
-    return [e.text(`${key}_config`, ea.ALL).withCategory('config').withDescription('Sensor zone JSON: name and mask_hex (80 hex characters). clear removes it. Use overwrite:true to replace an unmanaged ID. Timeout uses the separate zone number setting.'),
+    return [e.text(`${key}_config`, ea.ALL).withCategory('config').withDescription('Sensor zone JSON: name and mask_hex (80 hex characters), and type "bed" for a bed (firmware 0062 and later). clear removes it. Use overwrite:true to replace an unmanaged ID. Timeout uses the separate zone number setting.'),
         e.enum(`${key}_status`, ea.STATE, ['ready', 'pending', 'error']).withCategory('diagnostic'),
         e.text(`${key}_error`, ea.STATE).withCategory('diagnostic'),
         e.binary(`${key}_occupancy`, ea.STATE, true, false).withDescription('Presence reported by this native sensor zone; independent of software zones'),
@@ -906,27 +918,40 @@ const attributeSyncConverters = ['msOccupancySensing', 'msIlluminanceMeasurement
     },
 }));
 
-// FC0C event 0: the target list. Records follow the Matter LocationInfo order: id, x, y, cell (row << 8 | col),
-// activity (1 moving, 2 still), fall, posture, zone id, in-zone id.
+// FC0C event 0: the target list. Records follow Aqara's TargetLocationInfo struct (matter-js/matterjs-server#1298):
+// id, x, y, three fields that firmware 0060 changed, target type, posture and native zone. Up to 0051 the three are the
+// cell (row << 8 | col), the activity (1 moving, 2 still) and a fall flag. From 0060 they are the number of points that
+// move (above 0: the target moves, even in place), the points that only breathe, and a tracker diagnostic.
 // Ember coordinators pass on only the first 80 bytes (zigbee-herdsman#1886), which cuts reports with 3 or more targets.
-// Returns every target whose position and activity arrived, and how many the sensor reported.
+// Returns every target whose position and movement arrived, and how many the sensor reported.
 // Anything that does not parse throws: an unreadable report never becomes an empty room.
-export function decodeTrackingFrame(data) {
+const targetTypes = ['person', 'not_person', 'fan', 'pet', 'curtain', 'plant', 'vacuum', 'air_purifier', 'child'];
+const postures = ['walk', 'sit', 'stand', 'lie', 'fall', 'suspected_fall'];
+export function decodeTrackingFrame(data, firmware) {
     if (!Buffer.isBuffer(data) || data.length < 7 || ![0x0c, 0x1c].includes(data[0]) ||
         data.readUInt16LE(1) !== 0x115f || data[4] !== 0x8b || data.readUInt16LE(5) !== 0) return undefined;
     if (data.length < 10 || data[7] !== 0x4c) throw new Error('Unsupported tracking array');
     const reported = data.readUInt16LE(8);
     if (reported > 10 || data.length > 10 + 25 * reported) throw new Error('Invalid tracking frame');
-    const targets = [], ids = new Set();
+    const records = [], ids = new Set();
     const tags = [[0,9],[1,0],[2,0x20],[4,0x29],[7,0x29],[10,0x29],[13,0x29],[16,0x21],[19,0x30],[21,0x30],[23,0x20]];
     for (let index = 0; index < reported; index++) {
         const r = data.subarray(10 + index * 25, 35 + index * 25);
-        if (r.length < 16) break; // cut off before this target's activity
+        if (r.length < 16) break; // cut off before this target's movement
         if (tags.some(([offset, tag]) => offset < r.length && r[offset] !== tag) || ids.has(r[3])) throw new Error('Invalid tracking record');
-        ids.add(r[3]);
-        targets.push({id:r[3], x:r.readInt16LE(5), y:r.readInt16LE(8), cell:r.readInt16LE(11), activity:r.readInt16LE(14),
-            ...(r.length === 25 ? {fall:r.readUInt16LE(17), posture:r[20], zone:r[22], in_zone:r[24]} : {})});
+        ids.add(r[3]);records.push(r);
     }
+    // The version can be from before an update; a diagnostic above 1 cannot be a fall flag, so it shows the new layout.
+    const points = firmware >= 60 || records.some(r => r.length >= 19 && r.readUInt16LE(17) > 1);
+    const targets = records.map(r => {
+        const t = {id:r[3], x:r.readInt16LE(5), y:r.readInt16LE(8)}, a = r.readInt16LE(11), b = r.readInt16LE(14);
+        if (points) Object.assign(t, {moving_points:a, micro_points:b, moving:a > 0}, r.length >= 19 ? {tracking_state:r.readUInt16LE(17)} : {});
+        else Object.assign(t, {cell:a, activity:b}, b === 1 || b === 2 ? {moving:b === 1} : {}, r.length >= 19 ? {fall:r.readUInt16LE(17)} : {});
+        if (r.length >= 21 && targetTypes[r[20]]) t.type = targetTypes[r[20]];
+        if (r.length >= 23 && postures[r[22]]) t.posture = postures[r[22]];
+        if (r.length === 25) t.zone = r[24];
+        return t;
+    });
     return {targets, reported};
 }
 // Software zones use the observed x/y coordinates (approximately centimetres).
@@ -961,13 +986,24 @@ export function inZone(t, z) {
 // A target whose position stays within this many centimetres has not moved. Real dots either sit on exactly
 // the same spot or jump by more: on a real FP400, 5, 10 and 15 cm found the same still spans.
 const STILL_RADIUS=10;
+// What the people_only option leaves out of the zones: everything the sensor says is not a person.
+const notPeople=new Set(['not_person','fan','pet','curtain','plant','vacuum','air_purifier']);
+const movingOf=targets=>({moving:targets.some(t=>t.moving===true),still:targets.length>0 && targets.every(t=>t.moving===false)});
 export class SoftwareZoneTracker {
-    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.still=new Map();this.awaiting=new Set();this.invalid=false;this.partial=false;this.presence=undefined;}
+    constructor(zones = {}) {this.zones=zones;this.lastAt=null;this.outsideSince={};this.occupied={};this.inside={};this.lastSeen=new Map();this.still=new Map();this.awaiting=new Set();this.invalid=false;this.partial=false;this.presence=undefined;this.peopleOnly=false;}
+    ignores(t) {return this.peopleOnly && notPeople.has(t.type);}
     // Returns the targets that entered or left each zone with this frame. When the report was cut short
     // (reported > targets.length), targets missing from it are assumed to stay where they were last seen;
     // if even that cannot account for every target, no zone counts down to empty (a running countdown stops).
+    // Marks each target with the type it had in the frame before when its record was cut before the type (a target
+    // not in that frame may be someone new with a reused id), and with ignored when the zones leave it out.
     accept(targets, now, reported = targets.length) {
-        this.lastAt=now;this.invalid=false;
+        const previous=this.lastAt;this.lastAt=now;this.invalid=false;
+        for (const t of targets) {
+            const before=this.lastSeen.get(t.id), type=t.type ?? (before?.at===previous ? before.type : undefined);
+            if (type) t.type=type;
+            if (this.ignores(t)) t.ignored=true;
+        }
         const decoded=new Set(targets.map(t=>t.id)),missing=reported-targets.length;
         this.partial=missing>0;
         const carried=missing>0?[...this.lastSeen.values()].filter(t=>!decoded.has(t.id)).sort((a,b)=>b.at-a.at).slice(0,missing):[];
@@ -980,7 +1016,7 @@ export class SoftwareZoneTracker {
             if (Number.isInteger(t.id) && (!spot || Math.hypot(t.x-spot.x,t.y-spot.y)>STILL_RADIUS)) this.still.set(t.id,{x:t.x,y:t.y,since:now});
         }
         if (missing<=0) for (const id of this.still.keys()) if (!decoded.has(id)) this.still.delete(id);
-        const all=[...targets,...carried],events=[];
+        const all=[...targets,...carried].filter(t=>!this.ignores(t)),events=[];
         for (const [id,z] of Object.entries(this.zones)) {
             const inside=all.filter(t=>inZone(t,z));
             if (inside.length) {this.occupied[id]=true;delete this.outsideSince[id];}
@@ -991,7 +1027,7 @@ export class SoftwareZoneTracker {
                 for (const t of ids) if (!before.ids.has(t)) events.push({zone:Number(id),type:'enter'});
                 for (const t of before.ids) if (!ids.has(t)) events.push({zone:Number(id),type:'leave'});
             }
-            this.inside[id]={ids,moving:inside.some(t=>t.activity===1),still:inside.length>0 && inside.every(t=>t.activity===2)};
+            this.inside[id]={ids,...movingOf(inside)};
         }
         this.awaiting.clear();
         return events;
@@ -1023,7 +1059,7 @@ export class SoftwareZoneTracker {
         for (const [zone,inside] of Object.entries(this.inside)) {
             if (!inside.ids.has(id)) continue;
             const ids=new Set([...inside.ids].filter(other=>other!==id)), left=[...ids].map(other=>this.lastSeen.get(other)).filter(Boolean);
-            this.inside[zone]={ids,moving:left.some(t=>t.activity===1),still:left.length>0 && left.every(t=>t.activity===2)};
+            this.inside[zone]={ids,...movingOf(left)};
             if (!ids.size && this.outsideSince[zone]===undefined) this.outsideSince[zone]=now;
             events.push({zone:Number(zone),type:'leave'});
         }
@@ -1044,7 +1080,7 @@ export class SoftwareZoneTracker {
             result[`${prefix}_available`]=known;
             result[`${prefix}_occupancy`]=known ? !emptyRoom && Boolean(this.occupied[id]) : null;
             result[`${prefix}_count`]=known ? count : null;
-            // Moving if anyone moves, still only if everyone is reported still (2); any other raw value stays unknown.
+            // Moving if anyone moves, still only if everyone is reported still; a target without either stays unknown.
             result[`${prefix}_activity`]=known && count ? (inside.moving ? 'moving' : inside.still ? 'still' : null) : null;
         }
         return result;
@@ -1055,6 +1091,7 @@ function softwareContext(device, publish) {
     let context=softwareZoneContexts.get(device.ieeeAddr);
     if (!context) {
         context={tracker:new SoftwareZoneTracker(device.meta.fp400SoftwareZones ?? {}),publish,lastState:''};
+        context.tracker.peopleOnly=device.meta.fp400PeopleOnly===true;
         // Publishes only changes that happen with time (absence timeouts, staleness).
         context.timer=setInterval(()=>{
             const state=context.tracker.state(Date.now()), encoded=JSON.stringify(state);
@@ -1073,11 +1110,20 @@ function zoneState(context) {
 // The sensor never reports its area masks on its own, so read them at start and every 5 minutes; the card then
 // also shows changes made elsewhere (e.g. AI recognition).
 const regionsReadAt=new Map();
+// The firmware decides how positions are read (decodeTrackingFrame). The version from the pairing can be from before
+// an update, so read it at start and again after the sensor restarts (an update ends with one).
+const firmwareVersions=new Map();
 export async function fp400Poll(device) {
     await maintainNativeZones(device);
     // Room presence is only reported when it changes, so read it once for the zones to start from.
     if (softwareZoneContexts.get(device.ieeeAddr)?.tracker.presence===undefined) {
         try {await device.getEndpoint(1).read('msOccupancySensing', ['occupancy']);} catch {/* the next poll tries again */}
+    }
+    if (!firmwareVersions.has(device.ieeeAddr)) {
+        try {
+            const version=(await device.getEndpoint(1).read('genBasic', ['appVersion'])).appVersion;
+            firmwareVersions.set(device.ieeeAddr, Number.isInteger(version) ? version : undefined);
+        } catch(error) {if ([0x86,0xc3].includes(error?.code)) firmwareVersions.set(device.ieeeAddr, undefined);} // else the next poll tries again
     }
     if (!restoreChecked.has(device.ieeeAddr) && Date.now()>=(restoreProgress.get(device.ieeeAddr)?.nextAt??0)) {
         let result;
@@ -1155,7 +1201,7 @@ const softwareZoneHeartbeat={
         if(msg.endpoint.ID!==1)return;
         const native = nativeContext(msg.device); native.enabled = options?.native_zones === true; native.publish = publish;
         return {...nativeZoneState(msg.device), ...zoneState(softwareContext(msg.device,publish)), map_rotation:msg.device.meta.fp400MapRotation ?? 0,
-            forget_still_targets:msg.device.meta.fp400ForgetStill ?? 0};
+            forget_still_targets:msg.device.meta.fp400ForgetStill ?? 0, people_only:msg.device.meta.fp400PeopleOnly ? 'ON' : 'OFF'};
     },
 };
 // Endpoint 1 occupancy is the sensor's own room presence; the zones use it when positions pause.
@@ -1195,6 +1241,19 @@ const fp400ForgetStill={
         return {state:{forget_still_targets:minutes}};
     },
 };
+// Kept in Zigbee2MQTT, not on the sensor: software zones count only the targets that may be people.
+const fp400PeopleOnly={
+    key:['people_only'],
+    convertGet:async(entity,key,meta)=>{meta.publish({people_only:meta.device.meta.fp400PeopleOnly ? 'ON' : 'OFF'});},
+    convertSet:async(entity,key,value,meta)=>{
+        if(!['ON','OFF'].includes(value)) throw new Error('people_only must be ON or OFF');
+        const previous=meta.device.meta.fp400PeopleOnly;
+        meta.device.meta.fp400PeopleOnly=value==='ON';
+        try {await meta.device.save();} catch(error) {meta.device.meta.fp400PeopleOnly=previous;throw error;}
+        softwareContext(meta.device,meta.publish).tracker.peopleOnly=value==='ON';
+        return {state:{people_only:value}};
+    },
+};
 const softwareZoneExposes=Array.from({length:8},(_,i)=>{
     const key=`software_zone_${i+1}`;
     return [e.text(`${key}_config`,ea.ALL).withCategory('config').withDescription('Software rectangle JSON: name, x_min/x_max/y_min/y_max in observed coordinate units (approximately cm), absence_timeout in seconds; clear removes it'),
@@ -1209,7 +1268,7 @@ const fp400Tracking = {
     convert: (model, msg, publish) => {
         if (msg.endpoint.ID !== 1) return;
         try {
-            const decoded = decodeTrackingFrame(msg.data);
+            const decoded = decodeTrackingFrame(msg.data, firmwareVersions.get(msg.device.ieeeAddr) ?? msg.device.applicationVersion);
             if (!decoded) return;
             const {targets, reported} = decoded;
             const context=softwareContext(msg.device,publish);
@@ -1269,6 +1328,8 @@ const fp400TrackingExposes = [
         .withDescription('Make the sensor forget one tracked target by its id from targets_xy, for example a ghost. Real people are detected again.'),
     e.numeric('forget_still_targets', ea.ALL).withUnit('min').withValueMin(0).withValueMax(240).withValueStep(1).withCategory('config')
         .withDescription('Make the sensor forget a target whose position has not changed for this many minutes, usually a ghost that keeps a zone occupied. A real person is picked up again. People asleep can lie this still for over an hour. 0 turns it off.'),
+    e.binary('people_only', ea.ALL, 'ON', 'OFF').withCategory('config')
+        .withDescription('Software zones leave out targets the sensor marks as a pet, robot vacuum, fan, curtain, plant, air purifier or other object. People and children still count, and so does a target of unknown type.'),
     e.text('motion_last_frame', ea.STATE).withCategory('diagnostic').withHomeAssistant({enabledByDefault:false}).withDescription('Latest raw FC0B movement event, hex'),
     e.enum('tracking_status', ea.STATE, ['valid','partial','held','invalid','stale']).withCategory('diagnostic')
         .withDescription('valid: fresh positions. partial: the coordinator cut the last report, missing targets kept where last seen. held: no new positions; zones follow the sensor\'s own presence. invalid: unreadable report. stale: no positions and no presence'),
@@ -1277,14 +1338,18 @@ const fp400TrackingExposes = [
     e.numeric('target_count', ea.STATE).withDescription('Number of tracking records; may include retained tracks or animals'),
     e.text('targets_xy', ea.STATE).withHomeAssistant({enabledByDefault:false}).withDescription('id:x:y positions in raw device units; units/orientation need room calibration'),
 ];
-// FC0A attribute 16 lists the sensor's native zones as [id, type, cells, enabled] structs; null when unreadable.
+// FC0A attribute 16 lists the sensor's native zones as [id, type, cells, approach] structs; null when unreadable.
+// Aqara names the last member zoneProximityDetectionEnable; zones are always written with it on.
+const structValue = item => typeof item === 'object' && item !== null ? item.elmVal : item;
 export function nativeZoneIds(value) {
     if (!Array.isArray(value)) return null;
-    const ids = value.map(record => {
-        const first = Array.isArray(record) ? record[0] : record;
-        return typeof first === 'object' && first !== null ? first.elmVal : first;
-    });
+    const ids = value.map(record => structValue(Array.isArray(record) ? record[0] : record));
     return ids.every(Number.isInteger) ? ids : null;
+}
+// The type the sensor keeps for one native zone, or undefined.
+export function nativeZoneType(value, id) {
+    const record = Array.isArray(value) ? value.find(item => Array.isArray(item) && structValue(item[0]) === id) : undefined;
+    return record ? structValue(record[1]) : undefined;
 }
 // The FP400's reporting table holds five entries. Room presence takes the first (m.occupancy on endpoint 1), then
 // the native zones the sensor actually has, then the light sensor. Whatever gets no entry is polled.
@@ -1363,7 +1428,7 @@ export default {
     ota: true,
     description: 'Spatial multi-sensor (presence, illuminance and people count)',
     // The release version, shown on the device page. Zigbee2MQTT runs configure again once when it changes.
-    version: '0.6.4',
+    version: '0.7.0',
     // Numeric-name copies catch reports that arrive before the custom clusters are registered.
     fromZigbee: [softwareZoneHeartbeat, {...softwareZoneHeartbeat,cluster:"64523"}, fp400RoomPresence, fp400Tracking, fp400Motion,
         fp400ZoneSettingsReport, fp400ZoneAbsenceReport,
@@ -1380,7 +1445,7 @@ export default {
         fp400NativeReport, {...fp400NativeReport, cluster: 'aqaraFp400Radar'}, {...fp400NativeReport, cluster: '64523'},
         ...attributeSyncConverters,
     ],
-    toZigbee: [fp400NativeControl, softwareZoneControl, fp400MapRotation, fp400ForgetStill, fp400RemoveTarget, serializedSetting(fp400ZoneSettingsControl), fp400CapacityGet, fp400RestoreDiagnostics,
+    toZigbee: [fp400NativeControl, softwareZoneControl, fp400MapRotation, fp400ForgetStill, fp400PeopleOnly, fp400RemoveTarget, serializedSetting(fp400ZoneSettingsControl), fp400CapacityGet, fp400RestoreDiagnostics,
         ...fp400InstallationControl.key.map(key => ({...serializedSetting(fp400InstallationControl), key: [key]})),
         ...fp400RegionControl.key.map(key => ({...fp400RegionControl, key: [key]})),
         ...fp400RegionGet.key.map(key => ({...fp400RegionGet, key: [key]})),
@@ -1412,7 +1477,7 @@ export default {
     onEvent: async(event)=>{
         if (event.type === 'deviceInterview' && event.data.status === 'successful') await initializeReports(event.data.device);
         // The sensor announces itself when power returns, with its areas and mounting forgotten.
-        if(event.type==='deviceAnnounce') {restoreChecked.delete(event.data.device.ieeeAddr);restoreProgress.delete(event.data.device.ieeeAddr);}
+        if(event.type==='deviceAnnounce') {restoreChecked.delete(event.data.device.ieeeAddr);restoreProgress.delete(event.data.device.ieeeAddr);firmwareVersions.delete(event.data.device.ieeeAddr);}
         if(event.type==='stop') {
             const context=softwareZoneContexts.get(event.data.ieeeAddr);
             if(context)clearInterval(context.timer);
@@ -1423,7 +1488,7 @@ export default {
             const native = nativeContexts.get(event.data.ieeeAddr);
             if (native) {native.stopped = true; native.publish = undefined;}
             nativeContexts.delete(event.data.ieeeAddr);
-            restoreProgress.delete(event.data.ieeeAddr);persistencePending.delete(event.data.ieeeAddr);
+            restoreProgress.delete(event.data.ieeeAddr);persistencePending.delete(event.data.ieeeAddr);firmwareVersions.delete(event.data.ieeeAddr);
         }
     },
     extend: [

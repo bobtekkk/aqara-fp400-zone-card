@@ -18,11 +18,11 @@ test('desk entry, delayed exit, and stale data',()=>{
 test('a report cut short keeps missing targets where they were last seen',()=>{
  const bed=parseSoftwareZone({name:'Bed',x_min:-60,x_max:150,y_min:210,y_max:320,absence_timeout:3});
  const t=new SoftwareZoneTracker({1:desk,2:bed});
- t.accept([{id:1,x:0,y:80,activity:2},{id:2,x:50,y:250,activity:1}],0);
- t.accept([{id:1,x:0,y:80,activity:2},{id:7,x:-300,y:600,activity:2},{id:8,x:300,y:900,activity:2}],1000,4); // id 2 did not arrive
+ t.accept([{id:1,x:0,y:80,moving:false},{id:2,x:50,y:250,moving:true}],0);
+ t.accept([{id:1,x:0,y:80,moving:false},{id:7,x:-300,y:600,moving:false},{id:8,x:300,y:900,moving:false}],1000,4); // id 2 did not arrive
  let s=t.state(9000);
  assert.deepEqual([s.software_zone_2_occupancy,s.software_zone_2_count,s.software_zone_2_activity,s.tracking_status],[true,1,'moving','partial']);
- t.accept([{id:1,x:0,y:80,activity:2}],10000); // a complete report without id 2: it is gone
+ t.accept([{id:1,x:0,y:80,moving:false}],10000); // a complete report without id 2: it is gone
  s=t.state(13000);
  assert.deepEqual([s.software_zone_1_occupancy,s.software_zone_2_occupancy,s.software_zone_2_count],[true,false,0]);
 });
@@ -97,11 +97,11 @@ test('a position frame reports its status and is not published a second time by 
 });
 test('zone people count, moving/still, and enter/leave events',()=>{
  const t=new SoftwareZoneTracker({1:desk});
- assert.deepEqual(t.accept([{id:0,x:0,y:80,activity:2}],0),[],'nothing is known before the first frame');
+ assert.deepEqual(t.accept([{id:0,x:0,y:80,moving:false}],0),[],'nothing is known before the first frame');
  assert.equal(t.state(0).software_zone_1_count,1);assert.equal(t.state(0).software_zone_1_activity,'still');
- assert.deepEqual(t.accept([{id:0,x:0,y:80,activity:1},{id:1,x:-50,y:100,activity:2}],100),[{zone:1,type:'enter'}]);
+ assert.deepEqual(t.accept([{id:0,x:0,y:80,moving:true},{id:1,x:-50,y:100,moving:false}],100),[{zone:1,type:'enter'}]);
  assert.equal(t.state(100).software_zone_1_count,2);assert.equal(t.state(100).software_zone_1_activity,'moving');
- assert.deepEqual(t.accept([{id:1,x:-50,y:100,activity:2}],200),[{zone:1,type:'leave'}]);
+ assert.deepEqual(t.accept([{id:1,x:-50,y:100,moving:false}],200),[{zone:1,type:'leave'}]);
  assert.deepEqual(t.accept([],300),[{zone:1,type:'leave'}]);
  assert.equal(t.state(300).software_zone_1_count,0);assert.equal(t.state(300).software_zone_1_activity,null);
  t.reset(1);assert.deepEqual(t.accept([{id:5,x:0,y:80}],400),[],'no burst of events right after an edit');
@@ -123,7 +123,7 @@ test('a zone drawn on a turned map checks targets in its own frame',()=>{
 });
 test('when positions pause, the sensor\'s own presence keeps the zones: held while someone is there, empty when nobody is',()=>{
  const t=new SoftwareZoneTracker({1:desk});
- t.accept([{id:1,x:0,y:80,activity:2}],0);
+ t.accept([{id:1,x:0,y:80,moving:false}],0);
  assert.equal(t.state(31000).software_zone_1_occupancy,null,'no positions and no presence: unknown');
  t.setPresence(true,31000);
  let s=t.state(60000);
@@ -132,13 +132,39 @@ test('when positions pause, the sensor\'s own presence keeps the zones: held whi
  s=t.state(62000);
  assert.deepEqual([s.software_zone_1_occupancy,s.software_zone_1_count,s.software_zone_1_available,s.tracking_status],[false,0,true,'held']);
  t.reset(1);assert.equal(t.state(63000).software_zone_1_occupancy,false,'a zone edited in an empty room is empty at once');
- t.accept([{id:2,x:0,y:80,activity:1}],64000);assert.equal(t.state(64000).software_zone_1_occupancy,true,'fresh positions win again');
+ t.accept([{id:2,x:0,y:80,moving:true}],64000);assert.equal(t.state(64000).software_zone_1_occupancy,true,'fresh positions win again');
 });
-test('activity: moving if anyone moves, still only if everyone sends 2, otherwise unknown (raw 11 seen on one unit)',()=>{
+test('activity: moving if anyone moves, still only if everyone is still, otherwise unknown',()=>{
  const t=new SoftwareZoneTracker({1:desk}),act=targets=>{t.accept(targets,0);return t.state(0).software_zone_1_activity;};
- assert.equal(act([{id:1,x:0,y:80,activity:11}]),null);
+ assert.equal(act([{id:1,x:0,y:80}]),null,'old firmware sent raw 11 on one unit: no moving flag');
  assert.equal(t.state(0).software_zone_1_occupancy,true,'the zone is still occupied');
- assert.equal(act([{id:1,x:0,y:80,activity:2},{id:2,x:10,y:80,activity:11}]),null);
- assert.equal(act([{id:1,x:0,y:80,activity:1},{id:2,x:10,y:80,activity:11}]),'moving');
- assert.equal(act([{id:1,x:0,y:80,activity:2},{id:2,x:10,y:80,activity:2}]),'still');
+ assert.equal(act([{id:1,x:0,y:80,moving:false},{id:2,x:10,y:80}]),null);
+ assert.equal(act([{id:1,x:0,y:80,moving:true},{id:2,x:10,y:80}]),'moving');
+ assert.equal(act([{id:1,x:0,y:80,moving:false},{id:2,x:10,y:80,moving:false}]),'still');
+});
+test('people only: zones leave out what the sensor calls a pet or an object, and keep people, children and unknowns',()=>{
+ const t=new SoftwareZoneTracker({1:desk}),pet={id:2,x:10,y:80,moving:true,type:'pet'};
+ t.accept([pet],0);
+ assert.deepEqual([t.state(0).software_zone_1_count,t.state(0).software_zone_1_activity],[1,'moving'],'off by default: a pet counts');
+ t.peopleOnly=true;
+ const frame=[{id:1,x:0,y:80,moving:false,type:'person'},{...pet},{id:3,x:-20,y:90,type:'vacuum'},{id:4,x:20,y:70,moving:false,type:'child'},{id:5,x:30,y:60,moving:false}];
+ const events=t.accept(frame,100);
+ assert.deepEqual([t.state(100).software_zone_1_count,t.state(100).software_zone_1_activity],[3,'still'],'person, child and the dot of unknown type count; the moving pet does not');
+ assert.deepEqual(frame.map(f=>f.ignored??false),[false,true,true,false,false],'what the zones leave out is marked for the card');
+ assert.deepEqual(events,[{zone:1,type:'enter'},{zone:1,type:'enter'},{zone:1,type:'enter'},{zone:1,type:'leave'}],'the pet leaves the zone, the others enter');
+ for (const type of ['not_person','fan','curtain','plant','air_purifier']) assert.equal(t.ignores({type}),true,type);
+ // A record the coordinator cut before its type keeps the type it had a moment ago.
+ const cut=[{id:2,x:10,y:80,moving:true}];
+ t.accept(cut,200,1);
+ assert.deepEqual([cut[0].type,cut[0].ignored,t.state(200).software_zone_1_count],['pet',true,0]);
+ t.peopleOnly=false;t.accept([{id:2,x:10,y:80,moving:true}],300);
+ assert.equal(t.state(300).software_zone_1_count,1,'turned off: the pet counts again');
+});
+test('a reused id does not take the type of a dot that left frames ago',()=>{
+ const t=new SoftwareZoneTracker({1:desk}),far={id:1,x:300,y:900,moving:false,type:'person'};t.peopleOnly=true;
+ t.accept([{id:7,x:0,y:80,moving:true,type:'pet'},{...far}],0);
+ t.accept([{...far}],100,4);t.accept([{...far}],200,4); // Ember cut these frames: the pet with id 7 is not in them
+ const person={id:7,x:0,y:80,moving:false}; // someone new with the pet's old id, cut before the type
+ t.accept([{...far},person],300,4);
+ assert.deepEqual([person.type,person.ignored,t.state(300).software_zone_1_count],[undefined,undefined,1]);
 });

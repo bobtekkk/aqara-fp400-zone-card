@@ -6,7 +6,9 @@ import '../dist/fp400-zone-card.js';
 // registry (Home Assistant shares its entity registry) · renamed (zone 1's entity IDs renamed by HA, found via the registry)
 // held (no new positions; zones held by the sensor's own presence)
 // native (optional sensor-zone entities enabled) · native_delay=<ms> (new-zone finalization, default 20000)
-const params=new URLSearchParams(location.search),old=params.has('oldconv');
+// mqtt (an admin gets the dots over MQTT, with what converter 0.7 knows about each: a person moving at the desk and a
+// pet lying still; set window.__sim.targets to change them, sent on the next tick or by window.__sim.sendTargets())
+const params=new URLSearchParams(location.search),old=params.has('oldconv'),mqtt=params.has('mqtt');
 const device=params.get('prefix')??'0x54ef440000000001',card=document.querySelector('fp400-zone-card'),states={};
 if(params.has('phone'))document.querySelector('main').className='phone';
 // Entity IDs, and the Zigbee2MQTT key behind each one (what the registry's unique ID says).
@@ -24,9 +26,9 @@ if(params.has('native')){
 for(let i=1;i<=8;i++){set('text',`software_zone_${i}_config`,'clear');set('binary_sensor',`software_zone_${i}_occupancy`,'off');set('binary_sensor',`software_zone_${i}_available`,'on');if(!old){set('sensor',`software_zone_${i}_count`,'unknown');set('sensor',`software_zone_${i}_activity`,'unknown');}}
 set('text','software_zone_1_config',JSON.stringify({name:'Desk',x_min:-115,x_max:85,y_min:-19,y_max:131,absence_timeout:3}));
 set('text','software_zone_2_config',JSON.stringify({name:'Bed',x_min:-10,x_max:180,y_min:210,y_max:320,absence_timeout:3}));
-// Someone sitting at the desk, and a ghost (target 4, shown as 5) left of the bed.
-set('sensor','targets_xy','1:-25:82;4:-160:260');set('sensor','tracking_status','valid');
-set('binary_sensor','software_zone_1_occupancy','on');if(!old){set('sensor','software_zone_1_count','1');set('sensor','software_zone_1_activity','still');set('text','remove_target','unknown');}
+// Someone sitting at the desk, and a ghost (target 4, shown as 5) left of the bed. Over MQTT HA's tracking entities stay disabled.
+if(!mqtt){set('sensor','targets_xy','1:-25:82;4:-160:260');set('sensor','tracking_status','valid');}
+set('binary_sensor','software_zone_1_occupancy','on');if(!old){set('sensor','software_zone_1_count','1');set('sensor','software_zone_1_activity',mqtt?'moving':'still');set('text','remove_target','unknown');}
 // Sensor settings as the converter exposes them.
 if(!params.has('nosettings')){
     for(const [key,state,options] of [['presence_sensitivity','medium',['low','medium','high']],['proximity_distance','far',['far','medium','near']],['detection_direction','omnidirectional',['omnidirectional','left_right']],
@@ -37,13 +39,15 @@ if(!params.has('nosettings')){
     set('sensor','learning_state','result_received');set('sensor','learning_result_code','0');
     if(!old)set('number','map_rotation',params.get('rotation')??'0',{min:-180,max:180,step:1});
     if(!old)set('number','forget_still_targets','0',{min:0,max:240,step:1});
+    if(!old)set('switch','people_only','off');
 }
 // Simulated converter: three masks of 20 rows x 16 cols of 50 cm cells (x -400..400, y 0..1000, or -500..500 on the ceiling), columns right to left.
 // Like the real converter, each edit reads the mask, waits for the radio, then writes it back,
 // and Home Assistant's service call returns before that work finishes.
 const AREAS=['interference','entry_exit','edge'],types=params.has('noblocks')?[]:old?['interference']:AREAS;
 const masks=Object.fromEntries(AREAS.map(t=>[t,new Uint8Array(40)]));
-const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,keepTargets:false,nativeFail:'',nativeDelay:Number(params.get('native_delay')??20000),calls:[],shapes:[],ws:[]};
+const sim=window.__sim={latency:Number(params.get('latency')??400),fail:false,keepTargets:false,nativeFail:'',nativeDelay:Number(params.get('native_delay')??20000),calls:[],shapes:[],ws:[],topics:[],
+    targets:[{id:1,x:-25,y:82,moving:true,type:'person'},{id:4,x:-160,y:260,moving:false,type:'pet'}]};
 const maskHex=t=>[...masks[t]].map(b=>b.toString(16).padStart(2,'0')).join('');
 const gridY0=()=>states[idOf['select.installation_mode']??`select.${device}_installation_mode`]?.state==='ceiling'?-500:0;
 function cellBits(r,y0){
@@ -70,7 +74,7 @@ async function convert(type,op,value){
     else {const shape=JSON.parse(value);sim.shapes.push(shape);for(const b of shape.points?shapeBits(shape.points,gridY0()):cellBits(shape,gridY0())){if(op==='zone_add')read[b>>3]|=0x80>>(b%8);else read[b>>3]&=~(0x80>>(b%8));}}
     masks[type].set(read);set('sensor',`${type}_mask_hex`,maskHex(type));card.hass={...hass};
 }
-const hass={states,user:{is_admin:params.has('admin')},callService:async(domain,service,data)=>{
+const hass={states,user:{is_admin:params.has('admin')||mqtt},callService:async(domain,service,data)=>{
     sim.calls.push({domain,service,...data});
     await sleep(20);
     const id=data.entity_id,key=keyOf[id]??id.slice(id.indexOf('.')+device.length+2),type=AREAS.find(t=>key.startsWith(`${t}_`));
@@ -80,16 +84,21 @@ const hass={states,user:{is_admin:params.has('admin')},callService:async(domain,
         if(data.value.length>255)throw new Error('MQTT text exceeds 255 characters');
         const n=Number(native[1]),value=data.value==='clear'?{clear:true}:JSON.parse(data.value),creating=states[id].state==='clear'&&!value.clear;
         if('absence_timeout' in value)throw new Error('Set the zone number entity separately');
+        if('type' in value&&value.type!=='bed')throw new Error('The only zone type is bed');
         if(states[id].state==='unmanaged'&&!value.overwrite)throw new Error('Confirm overwrite');
         set('text',key,'unmanaged');card.hass={...hass};set('sensor',`native_zone_${n}_status`,'pending');set('sensor',`native_zone_${n}_error`,'');card.hass={...hass};
         sleep(creating?sim.nativeDelay:sim.latency).then(()=>{
             if(sim.nativeFail){set('sensor',`native_zone_${n}_status`,'error');set('sensor',`native_zone_${n}_error`,sim.nativeFail);}
-            else {set('text',key,value.clear?'clear':JSON.stringify({name:value.name,mask_hex:value.mask_hex}));card.hass={...hass};if(creating||value.clear)set('number',`zone_${n}_absence_timeout`,value.clear?'unknown':'10',{min:0,max:300,step:1});set('sensor',`native_zone_${n}_status`,'ready');}
+            else {set('text',key,value.clear?'clear':JSON.stringify({name:value.name,mask_hex:value.mask_hex,...(value.type==='bed'?{type:'bed'}:{})}));card.hass={...hass};if(creating||value.clear)set('number',`zone_${n}_absence_timeout`,value.clear?'unknown':'10',{min:0,max:300,step:1});set('sensor',`native_zone_${n}_status`,'ready');}
             card.hass={...hass};
         });
     }
     else if(domain==='text'&&type)convert(type,key.slice(type.length+1),data.value);
-    else if(key==='remove_target')later(()=>{states[id]={state:data.value,attributes:{}};if(!sim.keepTargets)set('sensor','targets_xy',states[`sensor.${device}_targets_xy`].state.split(';').filter(t=>t.split(':')[0]!==data.value).join(';')||'none');});
+    else if(key==='remove_target')later(()=>{
+        states[id]={state:data.value,attributes:{}};if(sim.keepTargets)return;
+        if(mqtt){sim.targets=sim.targets.filter(t=>String(t.id)!==data.value);sim.sendTargets();}
+        else set('sensor','targets_xy',states[`sensor.${device}_targets_xy`].state.split(';').filter(t=>t.split(':')[0]!==data.value).join(';')||'none');
+    });
     else if(domain==='select')later(()=>{states[id]={...states[id],state:data.option};});
     else if(domain==='number'){
         const zone=/^zone_([1-8])_absence_timeout$/.exec(key);
@@ -113,7 +122,13 @@ if(params.has('registry')||params.has('renamed')||params.has('renamedsettings'))
     };
 }
 if(params.has('held')){set('sensor','tracking_status','held');set('binary_sensor','software_zone_1_available','on');}
+// Live MQTT, like the converter's device topic: each frame has the dots, and with People only on the ones that are not people are ignored.
+if(mqtt)hass.connection={subscribeMessage:async(listener,{topic})=>{sim.topics.push(topic);sim.listener=listener;return ()=>{if(sim.listener===listener)sim.listener=null;};}};
+sim.sendTargets=()=>{
+    const only=states[`switch.${device}_people_only`]?.state==='on',targets=sim.targets.map(t=>only&&t.type&&!['person','child'].includes(t.type)?{...t,ignored:true}:t);
+    sim.listener?.({payload:JSON.stringify({targets_xy:targets.map(t=>`${t.id}:${t.x}:${t.y}`).join(';')||'none',tracking_targets:targets,tracking_status:'valid',tracking_last_update:new Date().toISOString()})});
+};
 card.setConfig(params.has('auto')?{}:{device:params.get('device')??device});
-function update(){if(params.has('offline'))set('sensor','tracking_last_update','unavailable');else set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};}
+function update(){if(params.has('offline'))set('sensor','tracking_last_update','unavailable');else if(!mqtt)set('sensor','tracking_last_update',params.has('held')?'2026-10-04T10:00:00.000Z':new Date().toISOString());card.hass={...hass};if(mqtt)sim.sendTargets();}
 update();setInterval(update,Number(params.get('tick')??3000));
 </script></body></html>

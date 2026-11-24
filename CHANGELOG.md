@@ -7,6 +7,23 @@ To update, get the new card through HACS and copy the new `z2m/aqara-fp400.mjs` 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
+### Fixed
+
+- **Moving or still on sensor firmware 0060 and later:** a zone's activity (`sensor.<fp400>_software_zone_N_activity`) works again; on newer firmware it stayed unknown almost all the time. Firmware 0060 changed what the sensor sends for each dot. Up to 0051 it said "moving" or "still"; from 0060 it sends how many of the dot's radar points move, and 0 means the person only breathes. The converter now reads the sensor's firmware version, again after an update, and understands both. On newer firmware someone fidgeting or waving in place counts as moving, and someone sitting or lying quietly as still. The meaning of the new fields comes from Aqara's notes in [matter-js/matterjs-server#1298](https://github.com/matter-js/matterjs-server/pull/1298).
+
+### Added
+
+- **What each dot is.** The sensor says whether a dot is a person, a child, a pet, a robot vacuum, a fan, a curtain, a plant or an air purifier. The card colours dots that are not people amber and labels them, for example "2 · pet", and says it when you click the dot. So far our test sensor has only ever said "person", so tell us how it does with your pets and vacuums.
+- **Zones count only people** in ⚙ Settings (`switch.<fp400>_people_only`, off by default): software zones leave out dots the sensor marks as a pet, robot vacuum, fan, curtain, plant, air purifier or other object. People, children and dots of unknown type still count. The card shows the left-out dots faded.
+- **Moving or still on the map:** a still dot is drawn as a ring, a moving one filled, and clicking a dot says which.
+- **Bed zones** for native sensor zones: tick **Bed zone** on a sensor zone. Aqara's notes say firmware 0062 and later watches a bed more closely for someone asleep; that has not been measured yet. The converter checks that the sensor kept the zone as a bed where it can read the sensor's zone list, and on firmware 0063 it does.
+
+### Changed
+
+- Each dot in `tracking_targets` (in the MQTT state, not a Home Assistant entity) now carries `moving`, `type` and, when the sensor sends one, `posture`, plus the raw fields under names that match the firmware: `cell`, `activity` and `fall` up to 0051, `moving_points`, `micro_points` and `tracking_state` from 0060. The old `posture`, `zone` and `in_zone` were misnamed and are gone: `zone` is now the native zone the dot is in. `targets_xy` is unchanged.
+
 ## [0.6.4] - 2026-11-18
 
 ### Fixed
@@ -144,7 +161,8 @@ Thanks to [@Mattieug](https://github.com/Mattieug) for #10 to #15.
 - Interference blocks, written to the sensor's own interference area.
 - Zigbee2MQTT converter (`z2m/aqara-fp400.mjs`): software zones, interference blocks, position tracking and the sensor's settings.
 
-[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/bobtekkk/aqara-fp400-zone-card/compare/v0.6.1...v0.6.2
